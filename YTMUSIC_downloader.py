@@ -2,10 +2,8 @@ import requests
 import re
 import html
 import base64
-import os
-import sys
 import subprocess
-from urllib.parse import unquote, urljoin
+from urllib.parse import unquote
 
 
 HEADERS = {
@@ -22,21 +20,53 @@ TIMEOUT = 20
 def normalize(text):
     text = html.unescape(text)
 
+    text = unquote(text)
+
     text = text.replace("–", "-")
     text = text.replace("—", "-")
     text = text.replace("_", " ")
 
-    text = re.sub(r"\(MP3\.tm\)", "", text, flags=re.I)
-    text = re.sub(r"\(audiostart\.net\)", "", text, flags=re.I)
+    text = re.sub(
+        r"\(MP3\.tm\)",
+        "",
+        text,
+        flags=re.I
+    )
 
-    text = re.sub(r"\.mp3$", "", text, flags=re.I)
+    text = re.sub(
+        r"\(audiostart\.net\)",
+        "",
+        text,
+        flags=re.I
+    )
 
-    text = re.sub(r"\s+", " ", text)
+    text = re.sub(
+        r"\.mp3$",
+        "",
+        text,
+        flags=re.I
+    )
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
 
     return text.strip().lower()
 
 
+def words(text):
+    text = normalize(text)
+
+    return re.findall(
+        r"[a-zа-яё0-9]+",
+        text
+    )
+
+
 def clean_filename(text):
+
     text = unquote(text)
 
     text = re.sub(
@@ -46,35 +76,50 @@ def clean_filename(text):
         flags=re.I
     )
 
-    text = text.replace("_", " ")
+    text = re.sub(
+        r"\(MP3\.mn\)\.mp3$",
+        "",
+        text,
+        flags=re.I
+    )
 
-    text = re.sub(r"\s+", " ", text)
+    text = text.replace(
+        "_",
+        " "
+    )
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
 
     return text.strip()
 
 
 def safe_filename(text):
-    text = re.sub(r'[<>:"/\\|?*]', "", text)
-    text = text.strip()
 
-    return text
+    text = re.sub(
+        r'[<>:"/\\|?*]',
+        "",
+        text
+    )
+
+    return text.strip()
 
 
 # ============================================================
-# ДЛИТЕЛЬНОСТЬ MP3
+# ДЛИТЕЛЬНОСТЬ
 # ============================================================
 
 def get_duration(url):
-    """
-    Получает длительность MP3 через ffprobe.
-    Ничего не скачивает целиком.
-    """
 
     try:
 
         command = [
             "ffprobe",
-            "-v", "error",
+            "-v",
+            "error",
             "-show_entries",
             "format=duration",
             "-of",
@@ -108,7 +153,9 @@ def format_duration(seconds):
     if seconds is None:
         return "??:??"
 
-    seconds = int(round(seconds))
+    seconds = int(
+        round(seconds)
+    )
 
     minutes = seconds // 60
     seconds = seconds % 60
@@ -137,7 +184,10 @@ def download_file(url, filename):
 
         if r.status_code != 200:
 
-            print("Ошибка скачивания. HTTP:", r.status_code)
+            print(
+                "Ошибка скачивания. HTTP:",
+                r.status_code
+            )
 
             return False
 
@@ -151,14 +201,23 @@ def download_file(url, filename):
             and "octet-stream" not in content_type
         ):
 
-            print("Ошибка: сервер не вернул аудиофайл.")
-            print("Content-Type:", content_type)
+            print(
+                "Ошибка: сервер не вернул аудиофайл."
+            )
+
+            print(
+                "Content-Type:",
+                content_type
+            )
 
             return False
 
         total = 0
 
-        with open(filename, "wb") as f:
+        with open(
+            filename,
+            "wb"
+        ) as f:
 
             for chunk in r.iter_content(
                 chunk_size=262144
@@ -172,10 +231,17 @@ def download_file(url, filename):
 
         print()
         print("ГОТОВО")
-        print("Файл:", filename)
+        print(
+            "Файл:",
+            filename
+        )
+
         print(
             "Размер:",
-            round(total / 1024 / 1024, 2),
+            round(
+                total / 1024 / 1024,
+                2
+            ),
             "МБ"
         )
 
@@ -183,7 +249,10 @@ def download_file(url, filename):
 
     except Exception as e:
 
-        print("Ошибка:", e)
+        print(
+            "Ошибка:",
+            e
+        )
 
         return False
 
@@ -192,29 +261,41 @@ def download_file(url, filename):
 # MP3PARTY
 # ============================================================
 
-def search_mp3party(artist, title):
+def search_mp3party(
+    artist,
+    title
+):
 
     print()
     print("[1/3] MP3Party")
 
-    query = f"{artist} {title}"
+    query = (
+        f"{artist} {title}"
+    )
 
     try:
 
         r = requests.get(
             "https://mp3party.net/search",
-            params={"q": query},
+            params={
+                "q": query
+            },
             headers=HEADERS,
             timeout=TIMEOUT
         )
 
         if r.status_code != 200:
 
-            print("HTTP:", r.status_code)
+            print(
+                "HTTP:",
+                r.status_code
+            )
 
             return None
 
-        text = html.unescape(r.text)
+        text = html.unescape(
+            r.text
+        )
 
         pattern = re.compile(
             r'<div class="track__user-panel"'
@@ -229,15 +310,22 @@ def search_mp3party(artist, title):
             re.I
         )
 
-        results = pattern.findall(text)
+        results = pattern.findall(
+            text
+        )
 
         print(
             "Найдено результатов:",
             len(results)
         )
 
-        wanted_artist = normalize(artist)
-        wanted_title = normalize(title)
+        wanted_artist = normalize(
+            artist
+        )
+
+        wanted_title = normalize(
+            title
+        )
 
         for (
             found_artist,
@@ -247,25 +335,32 @@ def search_mp3party(artist, title):
         ) in results:
 
             if (
-                normalize(found_artist)
-                == wanted_artist
+                normalize(
+                    found_artist
+                ) == wanted_artist
                 and
-                normalize(found_title)
-                == wanted_title
+                normalize(
+                    found_title
+                ) == wanted_title
             ):
 
                 print()
-                print("ТОЧНОЕ СОВПАДЕНИЕ")
+                print(
+                    "ТОЧНОЕ СОВПАДЕНИЕ"
+                )
+
                 print(
                     "Исполнитель:",
                     found_artist
                 )
+
                 print(
                     "Название:   ",
                     found_title
                 )
+
                 print(
-                    "ID:         ",
+                    "ID:",
                     song_id
                 )
 
@@ -274,7 +369,10 @@ def search_mp3party(artist, title):
                     + song_id
                 )
 
-                print("Ссылка:     ", url)
+                print(
+                    "Ссылка:",
+                    url
+                )
 
                 return url
 
@@ -293,6 +391,100 @@ def search_mp3party(artist, title):
 
 
 # ============================================================
+# СЛОВА, КОТОРЫЕ ОБЫЧНО ОЗНАЧАЮТ ВЕРСИЮ
+# ============================================================
+
+VERSION_WORDS = {
+    "nightcore",
+    "remix",
+    "slowed",
+    "sloweddown",
+    "sped",
+    "speed",
+    "spedup",
+    "bass",
+    "boost",
+    "boosted",
+    "edit",
+    "extended",
+    "instrumental",
+    "cover",
+    "live",
+    "acoustic",
+    "rework",
+    "version",
+    "bootleg",
+    "club",
+    "hardstyle",
+    "phonk",
+    "8d",
+    "radio",
+    "mix",
+    "mashup",
+    "vip",
+    "demo",
+    "karaoke",
+    "nightcorebot"
+}
+
+
+# ============================================================
+# РАЗБОР КАНДИДАТА MP3TM
+# ============================================================
+
+def extract_candidate_parts(
+    filename,
+    artist,
+    title
+):
+
+    candidate = normalize(
+        filename
+    )
+
+    artist_words = words(
+        artist
+    )
+
+    title_words = words(
+        title
+    )
+
+    candidate_words = words(
+        candidate
+    )
+
+    # --------------------------------------------------------
+    # Сколько слов исполнителя найдено
+    # --------------------------------------------------------
+
+    artist_hits = sum(
+        1
+        for word in artist_words
+        if word in candidate_words
+    )
+
+    # --------------------------------------------------------
+    # Сколько слов названия найдено
+    # --------------------------------------------------------
+
+    title_hits = sum(
+        1
+        for word in title_words
+        if word in candidate_words
+    )
+
+    return (
+        candidate,
+        artist_words,
+        title_words,
+        candidate_words,
+        artist_hits,
+        title_hits
+    )
+
+
+# ============================================================
 # ОЦЕНКА КАНДИДАТА MP3TM
 # ============================================================
 
@@ -302,155 +494,170 @@ def score_mp3tm_candidate(
     title
 ):
 
-    name = normalize(filename)
+    (
+        candidate,
+        artist_words,
+        title_words,
+        candidate_words,
+        artist_hits,
+        title_hits
+    ) = extract_candidate_parts(
+        filename,
+        artist,
+        title
+    )
 
-    wanted_artist = normalize(artist)
-    wanted_title = normalize(title)
+    if not artist_words:
+        return -100000
+
+    if not title_words:
+        return -100000
+
+    # --------------------------------------------------------
+    # Исполнитель должен совпадать полностью
+    # по словам
+    # --------------------------------------------------------
+
+    if artist_hits < len(
+        artist_words
+    ):
+
+        return -100000
+
+    # --------------------------------------------------------
+    # Название должно совпадать полностью
+    # по словам
+    # --------------------------------------------------------
+
+    if title_hits < len(
+        title_words
+    ):
+
+        return -100000
 
     score = 0
 
     # --------------------------------------------------------
-    # Исполнитель
+    # Базовое совпадение
     # --------------------------------------------------------
 
-    if wanted_artist in name:
+    score += 500
 
-        score += 100
-
-    else:
-
-        return -10000
-
-    # --------------------------------------------------------
-    # Название
-    # --------------------------------------------------------
-
-    if wanted_title in name:
-
-        score += 100
-
-    else:
-
-        return -10000
-
-    # --------------------------------------------------------
-    # Идеальное сочетание
-    # --------------------------------------------------------
-
-    exact_phrase = (
-        wanted_artist
-        + " - "
-        + wanted_title
+    score += (
+        artist_hits * 100
     )
 
-    if exact_phrase in name:
-
-        score += 300
-
-    # Обратный порядок тоже возможен
-    reverse_phrase = (
-        wanted_title
-        + " - "
-        + wanted_artist
+    score += (
+        title_hits * 100
     )
 
-    if reverse_phrase in name:
-
-        score += 200
-
     # --------------------------------------------------------
-    # Анализ лишнего текста
+    # Точное словосочетание
     # --------------------------------------------------------
 
-    expected = (
-        wanted_artist
-        + " "
-        + wanted_title
+    wanted = normalize(
+        f"{artist} {title}"
     )
 
-    remaining = name
-
-    remaining = remaining.replace(
-        wanted_artist,
-        "",
-        1
+    wanted_reverse = normalize(
+        f"{title} {artist}"
     )
 
-    remaining = remaining.replace(
-        wanted_title,
-        "",
-        1
-    )
+    if wanted in candidate:
 
-    remaining = re.sub(
-        r"\s*-\s*",
-        " ",
-        remaining
-    )
+        score += 1000
 
-    remaining = re.sub(
-        r"\s+",
-        " ",
-        remaining
-    ).strip()
+    elif wanted_reverse in candidate:
 
-    # Чем меньше лишнего текста,
-    # тем выше результат.
-
-    score -= len(remaining) * 2
+        score += 800
 
     # --------------------------------------------------------
-    # Если имя почти полностью совпадает
-    # --------------------------------------------------------
-
-    if normalize(name) == normalize(expected):
-
-        score += 500
-
-    # --------------------------------------------------------
-    # Типичные дополнительные версии
+    # Идеальная строка:
     #
-    # НЕ запрещаем их.
-    # Просто даём дополнительный штраф,
-    # если их нет в запросе.
+    # artist - title
     # --------------------------------------------------------
 
-    modifiers = [
-        "nightcore",
-        "remix",
-        "slowed",
-        "sped up",
-        "speed up",
-        "bass",
-        "type beat",
-        "edit",
-        "extended",
-        "instrumental",
-        "cover",
-        "live",
-        "acoustic",
-        "rework",
-        "version",
-        "bootleg",
-        "club",
-        "hardstyle",
-        "phonk"
-    ]
-
-    requested_text = (
-        wanted_artist
-        + " "
-        + wanted_title
+    exact_1 = normalize(
+        f"{artist} - {title}"
     )
 
-    for modifier in modifiers:
+    exact_2 = normalize(
+        f"{title} - {artist}"
+    )
+
+    if candidate == exact_1:
+
+        score += 5000
+
+    elif candidate == exact_2:
+
+        score += 4500
+
+    # --------------------------------------------------------
+    # Определяем лишние слова
+    # --------------------------------------------------------
+
+    required_words = (
+        artist_words
+        + title_words
+    )
+
+    remaining = list(
+        candidate_words
+    )
+
+    for word in required_words:
+
+        if word in remaining:
+
+            remaining.remove(
+                word
+            )
+
+    extra_words = remaining
+
+    # --------------------------------------------------------
+    # Главный принцип:
+    #
+    # чем меньше лишних слов,
+    # тем лучше кандидат.
+    # --------------------------------------------------------
+
+    score -= (
+        len(extra_words) * 250
+    )
+
+    # --------------------------------------------------------
+    # Особый штраф версиям
+    #
+    # Если пользователь не запросил
+    # nightcore/remix/etc.
+    # --------------------------------------------------------
+
+    requested_words = set(
+        words(
+            f"{artist} {title}"
+        )
+    )
+
+    for word in extra_words:
 
         if (
-            modifier in name
-            and modifier not in requested_text
+            word in VERSION_WORDS
+            and
+            word not in requested_words
         ):
 
-            score -= 80
+            score -= 500
+
+    # --------------------------------------------------------
+    # Штраф за слишком длинное название
+    # --------------------------------------------------------
+
+    score -= (
+        len(candidate_words)
+        * 2
+    )
 
     return score
 
@@ -459,12 +666,17 @@ def score_mp3tm_candidate(
 # MP3TM
 # ============================================================
 
-def search_mp3tm(artist, title):
+def search_mp3tm(
+    artist,
+    title
+):
 
     print()
     print("[2/3] MP3TM")
 
-    query = f"{artist} {title}"
+    query = (
+        f"{artist} {title}"
+    )
 
     slug = re.sub(
         r"[^a-zA-Z0-9а-яА-ЯёЁ]+",
@@ -486,14 +698,19 @@ def search_mp3tm(artist, title):
 
         if r.status_code != 200:
 
-            print("HTTP:", r.status_code)
+            print(
+                "HTTP:",
+                r.status_code
+            )
 
             return None
 
-        text = html.unescape(r.text)
+        text = html.unescape(
+            r.text
+        )
 
         # ----------------------------------------------------
-        # Ищем MP3
+        # MP3-ссылки
         # ----------------------------------------------------
 
         links = re.findall(
@@ -503,7 +720,9 @@ def search_mp3tm(artist, title):
         )
 
         links = list(
-            dict.fromkeys(links)
+            dict.fromkeys(
+                links
+            )
         )
 
         print(
@@ -512,7 +731,7 @@ def search_mp3tm(artist, title):
         )
 
         # ----------------------------------------------------
-        # Создаём кандидатов
+        # Кандидаты
         # ----------------------------------------------------
 
         candidates = []
@@ -527,13 +746,15 @@ def search_mp3tm(artist, title):
                 filename
             )
 
-            score = score_mp3tm_candidate(
-                filename,
-                artist,
-                title
+            score = (
+                score_mp3tm_candidate(
+                    filename,
+                    artist,
+                    title
+                )
             )
 
-            if score <= -1000:
+            if score <= -100000:
                 continue
 
             candidates.append({
@@ -552,7 +773,7 @@ def search_mp3tm(artist, title):
             return None
 
         # ----------------------------------------------------
-        # Сортировка по качеству совпадения
+        # Сортируем
         # ----------------------------------------------------
 
         candidates.sort(
@@ -561,12 +782,15 @@ def search_mp3tm(artist, title):
         )
 
         # ----------------------------------------------------
-        # Показываем кандидатов
+        # Выводим найденные варианты
         # ----------------------------------------------------
 
         print()
+
         print(
-            "КАНДИДАТЫ MP3TM:"
+            "НАЙДЕНО ВАРИАНТОВ "
+            "С ОДИНАКОВЫМ СОВПАДЕНИЕМ:",
+            len(candidates)
         )
 
         for i, candidate in enumerate(
@@ -576,28 +800,32 @@ def search_mp3tm(artist, title):
 
             print(
                 f"{i}. "
-                f"{candidate['filename']} "
-                f"[совпадение: "
-                f"{candidate['score']}]"
+                f"{candidate['filename']}"
             )
 
         # ----------------------------------------------------
-        # Получаем длительность только
-        # лучших кандидатов
+        # Проверяем длительность лучших
         # ----------------------------------------------------
 
-        top_score = candidates[0]["score"]
+        # Сначала определяем действительно
+        # лучшие текстовые совпадения.
 
-        top_candidates = [
-            c
-            for c in candidates
-            if c["score"] == top_score
+        best_score = (
+            candidates[0]["score"]
+        )
+
+        top = [
+            candidate
+            for candidate in candidates
+            if candidate["score"]
+            == best_score
         ]
 
-        # Не проверяем бесконечно много файлов.
-        # Достаточно лучших кандидатов.
+        # Если есть несколько кандидатов
+        # с одинаковым текстовым совпадением,
+        # проверяем длительность.
 
-        for candidate in top_candidates[:10]:
+        for candidate in top[:10]:
 
             candidate["duration"] = (
                 get_duration(
@@ -606,21 +834,20 @@ def search_mp3tm(artist, title):
             )
 
         # ----------------------------------------------------
-        # Если есть несколько одинаковых
-        # по совпадению кандидатов —
-        # выводим длительность.
+        # Если кандидатов несколько
         # ----------------------------------------------------
 
-        if len(top_candidates) > 1:
+        if len(top) > 1:
 
             print()
+
             print(
                 "ВАРИАНТЫ С ОДИНАКОВЫМ "
-                "СОВПАДЕНИЕМ:"
+                "ТЕКСТОВЫМ СОВПАДЕНИЕМ:"
             )
 
             for i, candidate in enumerate(
-                top_candidates[:10],
+                top[:10],
                 1
             ):
 
@@ -628,17 +855,56 @@ def search_mp3tm(artist, title):
                     f"{i}. "
                     f"{candidate['filename']} "
                     f"["
-                    f"{format_duration(candidate['duration'])}"
+                    f"{format_duration("
+                        candidate['duration']
+                    )}"
                     f"]"
                 )
 
         # ----------------------------------------------------
-        # Лучший кандидат
+        # Выбираем лучший
+        #
+        # Если длительность известна,
+        # она используется как дополнительный
+        # критерий только между равными
+        # текстовыми совпадениями.
         # ----------------------------------------------------
 
-        best = top_candidates[0]
+        best = top[0]
+
+        if len(top) > 1:
+
+            known_duration = [
+                c
+                for c in top
+                if c["duration"]
+                is not None
+            ]
+
+            if known_duration:
+
+                # Предпочитаем более короткое
+                # отличие только если текст
+                # одинаково хорош.
+                #
+                # Это не означает, что короткая
+                # версия всегда правильная.
+                # Длительность лишь последний
+                # критерий.
+
+                known_duration.sort(
+                    key=lambda c:
+                    c["duration"]
+                )
+
+                best = known_duration[0]
+
+        # ----------------------------------------------------
+        # Результат
+        # ----------------------------------------------------
 
         print()
+
         print(
             "НАЙДЕН НАИЛУЧШИЙ КАНДИДАТ"
         )
@@ -653,14 +919,17 @@ def search_mp3tm(artist, title):
             title
         )
 
-        if best["duration"] is not None:
+        print(
+            "Файл:",
+            best["filename"]
+        )
 
-            print(
-                "Длительность:",
-                format_duration(
-                    best["duration"]
-                )
+        print(
+            "Длительность:",
+            format_duration(
+                best["duration"]
             )
+        )
 
         print(
             "URL:",
@@ -676,36 +945,48 @@ def search_mp3tm(artist, title):
             e
         )
 
-    return None
+        return None
 
 
 # ============================================================
 # AUDIOSTART
 # ============================================================
 
-def search_audiostart(artist, title):
+def search_audiostart(
+    artist,
+    title
+):
 
     print()
     print("[3/3] AudioStart")
 
-    query = f"{artist} {title}"
+    query = (
+        f"{artist} {title}"
+    )
 
     try:
 
         r = requests.get(
             "https://audiostart.net/",
-            params={"song": query},
+            params={
+                "song": query
+            },
             headers=HEADERS,
             timeout=TIMEOUT
         )
 
         if r.status_code != 200:
 
-            print("HTTP:", r.status_code)
+            print(
+                "HTTP:",
+                r.status_code
+            )
 
             return None
 
-        text = html.unescape(r.text)
+        text = html.unescape(
+            r.text
+        )
 
         links = re.findall(
             r'href=["\']([^"\']*?/getmp3/[^"\']+)["\']',
@@ -714,7 +995,9 @@ def search_audiostart(artist, title):
         )
 
         links = list(
-            dict.fromkeys(links)
+            dict.fromkeys(
+                links
+            )
         )
 
         print(
@@ -722,8 +1005,13 @@ def search_audiostart(artist, title):
             len(links)
         )
 
-        wanted_artist = normalize(artist)
-        wanted_title = normalize(title)
+        wanted_artist = normalize(
+            artist
+        )
+
+        wanted_title = normalize(
+            title
+        )
 
         for link in links:
 
@@ -736,11 +1024,14 @@ def search_audiostart(artist, title):
                     )[1]
                 )
 
-                decoded = base64.b64decode(
-                    encoded
-                ).decode(
-                    "utf-8",
-                    errors="ignore"
+                decoded = (
+                    base64.b64decode(
+                        encoded
+                    )
+                    .decode(
+                        "utf-8",
+                        errors="ignore"
+                    )
                 )
 
                 decoded = unquote(
@@ -759,7 +1050,9 @@ def search_audiostart(artist, title):
                     in decoded_normalized
                 ):
 
-                    if link.startswith("//"):
+                    if link.startswith(
+                        "//"
+                    ):
 
                         link = (
                             "https:"
@@ -808,8 +1101,11 @@ def search_audiostart(artist, title):
 def main():
 
     print("=" * 50)
-    print("YTMUSIC DOWNLOADER")
+    print(
+        "YTMUSIC DOWNLOADER"
+    )
     print("=" * 50)
+
     print()
 
     artist = input(
@@ -839,6 +1135,7 @@ def main():
     )
 
     print()
+
     print("=" * 50)
 
     print(
@@ -850,9 +1147,9 @@ def main():
 
     print("=" * 50)
 
-    # --------------------------------------------------------
+    # ========================================================
     # MP3PARTY
-    # --------------------------------------------------------
+    # ========================================================
 
     url = search_mp3party(
         artist,
@@ -863,9 +1160,11 @@ def main():
 
         print()
         print("=" * 50)
+
         print(
             "ВЫБРАН ИСТОЧНИК: MP3PARTY"
         )
+
         print("=" * 50)
 
         print(
@@ -884,9 +1183,9 @@ def main():
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # MP3TM
-    # --------------------------------------------------------
+    # ========================================================
 
     url = search_mp3tm(
         artist,
@@ -897,9 +1196,11 @@ def main():
 
         print()
         print("=" * 50)
+
         print(
             "ВЫБРАН ИСТОЧНИК: MP3TM"
         )
+
         print("=" * 50)
 
         print(
@@ -918,9 +1219,9 @@ def main():
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # AUDIOSTART
-    # --------------------------------------------------------
+    # ========================================================
 
     url = search_audiostart(
         artist,
@@ -931,9 +1232,11 @@ def main():
 
         print()
         print("=" * 50)
+
         print(
             "ВЫБРАН ИСТОЧНИК: AUDIOSTART"
         )
+
         print("=" * 50)
 
         print(
@@ -952,15 +1255,18 @@ def main():
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # НЕ НАЙДЕНО
-    # --------------------------------------------------------
+    # ========================================================
 
     print()
+
     print("=" * 50)
+
     print(
         "ТРЕК НЕ НАЙДЕН"
     )
+
     print("=" * 50)
 
     input(
