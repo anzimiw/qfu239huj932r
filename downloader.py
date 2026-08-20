@@ -14,16 +14,6 @@ from urllib.parse import unquote
 # ПУТИ ПРОЕКТА
 # ============================================================
 
-# downloader.py находится:
-#
-# YTM_Downloader/
-#     engine/
-#         downloader.py
-#
-# Поэтому:
-# ENGINE_FOLDER = .../YTM_Downloader/engine
-# PROJECT_FOLDER = .../YTM_Downloader
-
 ENGINE_FOLDER = os.path.dirname(
     os.path.abspath(__file__)
 )
@@ -106,6 +96,16 @@ HEADERS = {
 }
 
 
+YANDEX_HEADERS = {
+    "User-Agent": HEADERS["User-Agent"],
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language":
+        "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Referer":
+        "https://music.yandex.ru/"
+}
+
+
 TIMEOUT = 20
 
 MIN_FILE_SIZE = 10 * 1024
@@ -160,7 +160,6 @@ def normalize(text):
 
     text = text.lower()
 
-    # OG / OF Buda
     text = re.sub(
         r"\bof\s+buda\b",
         "og buda",
@@ -264,6 +263,423 @@ def format_duration(seconds):
 
 
 # ============================================================
+# ОПРЕДЕЛЕНИЕ ИСТОЧНИКА
+# ============================================================
+
+def is_yandex_music_url(url):
+
+    if not url:
+        return False
+
+    url = url.lower()
+
+    return (
+        "music.yandex.ru/" in url
+        or
+        "music.yandex.com/" in url
+        or
+        "music.yandex.kz/" in url
+        or
+        "music.yandex.by/" in url
+        or
+        "music.yandex.uz/" in url
+    )
+
+
+def is_youtube_music_url(url):
+
+    if not url:
+        return False
+
+    url = url.lower()
+
+    return (
+        "music.youtube.com/" in url
+        or
+        "youtube.com/" in url
+        or
+        "youtu.be/" in url
+    )
+
+
+# ============================================================
+# ЯНДЕКС — РАЗБОР URL
+# ============================================================
+
+def parse_yandex_url(url):
+
+    if not is_yandex_music_url(url):
+        return None
+
+    track_match = re.search(
+        r"/track/(\d+)",
+        url,
+        re.I
+    )
+
+    album_match = re.search(
+        r"/album/(\d+)",
+        url,
+        re.I
+    )
+
+    if not track_match:
+        return None
+
+    return {
+        "track_id": track_match.group(1),
+        "album_id": (
+            album_match.group(1)
+            if album_match
+            else ""
+        )
+    }
+
+
+# ============================================================
+# ЯНДЕКС — ТОЛЬКО МЕТАДАННЫЕ
+# ============================================================
+
+def get_yandex_music_info(url):
+
+    status(
+        "ПОЛУЧЕНИЕ ИНФОРМАЦИИ "
+        "ИЗ ЯНДЕКС МУЗЫКИ"
+    )
+
+    print()
+    print(
+        "АНАЛИЗ ССЫЛКИ ЯНДЕКС МУЗЫКИ"
+    )
+
+    parsed = parse_yandex_url(url)
+
+    if not parsed:
+        print()
+        print(
+            "Не удалось определить "
+            "ID трека Яндекс Музыки."
+        )
+        return None
+
+    track_id = parsed["track_id"]
+    album_id = parsed["album_id"]
+
+    print()
+    print("ID трека:", track_id)
+    print(
+        "ID альбома:",
+        album_id or "не указан"
+    )
+
+    print()
+    print(
+        "Получение точных метаданных "
+        "Яндекс Музыки по ID..."
+    )
+
+    api_url = (
+        "https://api.music.yandex.net/tracks/"
+        + track_id
+    )
+
+    try:
+        response = requests.get(
+            api_url,
+            headers=YANDEX_HEADERS,
+            timeout=TIMEOUT
+        )
+
+    except requests.RequestException as e:
+
+        print()
+        print(
+            "Ошибка соединения с API "
+            "Яндекс Музыки:"
+        )
+        print(e)
+
+        return None
+
+    print()
+    print(
+        "HTTP-код:",
+        response.status_code
+    )
+
+    print(
+        "Размер ответа:",
+        len(response.content),
+        "байт"
+    )
+
+    if response.status_code != 200:
+
+        print()
+        print(
+            "Не удалось получить "
+            "метаданные трека по ID."
+        )
+
+        return None
+
+    try:
+        data = response.json()
+
+    except Exception as e:
+
+        print()
+        print(
+            "Ошибка обработки JSON:"
+        )
+        print(e)
+
+        return None
+
+    result = data.get("result")
+
+    if isinstance(result, dict):
+
+        track = result.get("track")
+
+        if isinstance(track, dict):
+            result = track
+
+    elif isinstance(result, list):
+
+        if not result:
+            return None
+
+        result = result[0]
+
+    else:
+
+        print()
+        print(
+            "В ответе API отсутствует "
+            "корректный result."
+        )
+
+        return None
+
+    track = result
+
+    # --------------------------------------------------------
+    # ИСПОЛНИТЕЛИ
+    # --------------------------------------------------------
+
+    artists = track.get("artists")
+
+    artist_names = []
+
+    if isinstance(artists, list):
+
+        for artist_item in artists:
+
+            if not isinstance(
+                artist_item,
+                dict
+            ):
+                continue
+
+            name = artist_item.get("name")
+
+            if name:
+                artist_names.append(
+                    str(name)
+                )
+
+    artist = ", ".join(
+        artist_names
+    )
+
+    # --------------------------------------------------------
+    # НАЗВАНИЕ
+    # --------------------------------------------------------
+
+    title = (
+        track.get("title")
+        or ""
+    )
+
+    # --------------------------------------------------------
+    # АЛЬБОМ
+    # --------------------------------------------------------
+
+    album = ""
+
+    albums = track.get("albums")
+
+    if isinstance(
+        albums,
+        list
+    ) and albums:
+
+        first_album = albums[0]
+
+        if isinstance(
+            first_album,
+            dict
+        ):
+
+            album = (
+                first_album.get("title")
+                or ""
+            )
+
+            if not album:
+
+                possible_album_id = (
+                    first_album.get("id")
+                )
+
+                if possible_album_id:
+                    album_id = str(
+                        possible_album_id
+                    )
+
+    # --------------------------------------------------------
+    # ДЛИТЕЛЬНОСТЬ
+    # --------------------------------------------------------
+
+    duration_ms = track.get(
+        "durationMs"
+    )
+
+    duration = None
+
+    if duration_ms is not None:
+
+        try:
+            duration = (
+                float(duration_ms) /
+                1000.0
+            )
+
+        except Exception:
+            duration = None
+
+    # --------------------------------------------------------
+    # ОБЛОЖКА
+    # --------------------------------------------------------
+
+    cover_uri = (
+        track.get("coverUri")
+        or
+        track.get("ogImage")
+    )
+
+    cover_url = None
+
+    if cover_uri:
+
+        cover_url = str(
+            cover_uri
+        )
+
+        cover_url = cover_url.replace(
+            "%%",
+            "m1000x1000"
+        )
+
+        if cover_url.startswith("//"):
+
+            cover_url = (
+                "https:" +
+                cover_url
+            )
+
+        elif not (
+            cover_url.startswith("http://")
+            or
+            cover_url.startswith("https://")
+        ):
+
+            cover_url = (
+                "https://" +
+                cover_url
+            )
+
+    # --------------------------------------------------------
+    # ПРОВЕРКА
+    # --------------------------------------------------------
+
+    if not artist or not title:
+
+        print()
+        print(
+            "Не удалось определить "
+            "исполнителя или название."
+        )
+
+        return None
+
+    if duration is None:
+
+        print()
+        print(
+            "Не удалось определить "
+            "длительность."
+        )
+
+        return None
+
+    print()
+    print(
+        "Метаданные получены."
+    )
+
+    print()
+    print(
+        "Исполнитель:",
+        artist
+    )
+
+    print(
+        "Название:",
+        title
+    )
+
+    print(
+        "Альбом:",
+        album or "не определён"
+    )
+
+    print(
+        "Длительность:",
+        format_duration(duration)
+    )
+
+    print(
+        "ID трека:",
+        track_id
+    )
+
+    print(
+        "ID альбома:",
+        album_id or "не определён"
+    )
+
+    print(
+        "Обложка:",
+        "НАЙДЕНА"
+        if cover_url
+        else "НЕ НАЙДЕНА"
+    )
+
+    return {
+        "source": "yandex",
+        "artist": artist,
+        "title": title,
+        "album": album,
+        "duration": duration,
+        "cover_url": cover_url,
+        "track_id": track_id,
+        "album_id": album_id
+    }
+
+
+# ============================================================
 # ОЦЕНКА КАНДИДАТА
 # ============================================================
 
@@ -313,10 +729,6 @@ def candidate_text_score(
 
     score = 0
 
-    # --------------------------------------------------------
-    # ИСПОЛНИТЕЛЬ
-    # --------------------------------------------------------
-
     if artist_ratio == 1:
         score += 500
 
@@ -326,10 +738,6 @@ def candidate_text_score(
     else:
         score += 100
 
-    # --------------------------------------------------------
-    # НАЗВАНИЕ
-    # --------------------------------------------------------
-
     if title_ratio == 1:
         score += 500
 
@@ -338,10 +746,6 @@ def candidate_text_score(
 
     else:
         score += 100
-
-    # --------------------------------------------------------
-    # ТОЧНЫЕ СОВПАДЕНИЯ
-    # --------------------------------------------------------
 
     if wanted_title in candidate:
         score += 250
@@ -367,10 +771,6 @@ def candidate_text_score(
     if exact_2 in candidate:
         score += 350
 
-    # --------------------------------------------------------
-    # ЛИШНИЕ СЛОВА
-    # --------------------------------------------------------
-
     requested_words = (
         artist_words |
         title_words
@@ -382,10 +782,6 @@ def candidate_text_score(
     )
 
     score -= len(extra_words) * 15
-
-    # --------------------------------------------------------
-    # НЕЖЕЛАТЕЛЬНЫЕ ВЕРСИИ
-    # --------------------------------------------------------
 
     modifiers = {
         "nightcore",
@@ -553,7 +949,9 @@ def embed_cover(
             return
 
         img = Image.open(
-            io.BytesIO(response.content)
+            io.BytesIO(
+                response.content
+            )
         )
 
         if img.mode != "RGB":
@@ -726,6 +1124,7 @@ def get_youtube_music_info(url):
             return None
 
         return {
+            "source": "youtube",
             "artist": artist,
             "title": title,
             "album": album,
@@ -773,6 +1172,23 @@ def get_youtube_music_info(url):
         )
 
         return None
+
+
+# ============================================================
+# ОБЩЕЕ ПОЛУЧЕНИЕ МЕТАДАННЫХ
+# ============================================================
+
+def get_track_info(url):
+
+    if is_yandex_music_url(url):
+
+        return get_yandex_music_info(
+            url
+        )
+
+    return get_youtube_music_info(
+        url
+    )
 
 
 # ============================================================
@@ -932,7 +1348,7 @@ def process_lrc(
 
 
 # ============================================================
-# PLAYLIST
+# PLAYLIST YOUTUBE MUSIC
 # ============================================================
 
 def get_playlist_tracks(url):
@@ -1164,7 +1580,6 @@ def download_file(
                     os.remove(
                         temp_filename
                     )
-
                 except Exception:
                     pass
 
@@ -1178,14 +1593,10 @@ def download_file(
                 "*/*;q=0.8"
             )
 
-            headers["Range"] = (
-                "bytes=0-"
-            )
+            headers["Range"] = "bytes=0-"
 
             if referer:
-                headers["Referer"] = (
-                    referer
-                )
+                headers["Referer"] = referer
 
             with requests.Session() as session:
 
@@ -1203,7 +1614,6 @@ def download_file(
                 ):
 
                     if attempt < retries:
-
                         time.sleep(1)
                         continue
 
@@ -1252,6 +1662,10 @@ def download_file(
                     "МБ"
                 )
 
+                # ------------------------------------------------
+                # Защита от пустых / HTML-ответов
+                # ------------------------------------------------
+
                 if (
                     "text/html"
                     in content_type
@@ -1261,7 +1675,6 @@ def download_file(
                 ):
 
                     if attempt < retries:
-
                         time.sleep(1)
                         continue
 
@@ -1270,7 +1683,6 @@ def download_file(
                 if total < MIN_FILE_SIZE:
 
                     if attempt < retries:
-
                         time.sleep(1)
                         continue
 
@@ -1285,7 +1697,6 @@ def download_file(
                 ):
 
                     if attempt < retries:
-
                         time.sleep(1)
                         continue
 
@@ -1299,7 +1710,6 @@ def download_file(
                         os.remove(
                             filename
                         )
-
                     except Exception:
                         pass
 
@@ -1314,7 +1724,7 @@ def download_file(
 
                 return True
 
-        except Exception:
+        except Exception as e:
 
             if attempt < retries:
 
@@ -1433,9 +1843,6 @@ def search_mp3party(
 
         for candidate in candidates:
 
-            if target_duration is None:
-                continue
-
             candidate_duration = (
                 get_duration(
                     candidate["url"]
@@ -1448,7 +1855,7 @@ def search_mp3party(
 
             if candidate_duration is None:
 
-                candidate["final_score"] -= 100
+                candidate["final_score"] -= 200
 
                 continue
 
@@ -1588,9 +1995,6 @@ def search_mp3tm(
 
         for candidate in candidates:
 
-            if target_duration is None:
-                continue
-
             candidate_duration = (
                 get_duration(
                     candidate["url"]
@@ -1727,6 +2131,13 @@ def search_audiostart(
                         link
                     )
 
+                elif link.startswith("/"):
+
+                    link = (
+                        "https://audiostart.net"
+                        + link
+                    )
+
                 candidates.append({
                     "url":
                         link,
@@ -1757,9 +2168,6 @@ def search_audiostart(
         )
 
         for candidate in candidates:
-
-            if target_duration is None:
-                continue
 
             candidate_duration = (
                 get_duration(
@@ -1905,7 +2313,6 @@ def download_with_ytdlp(
                 os.remove(
                     source_file
                 )
-
             except Exception:
                 pass
 
@@ -1931,12 +2338,11 @@ def download_with_ytdlp(
         return True
 
     except Exception:
-
         return False
 
 
 # ============================================================
-# ПОИСК И СКАЧИВАНИЕ
+# ПОИСК И СКАЧИВАНИЕ ТРЕКА
 # ============================================================
 
 def find_and_download_track(
@@ -1944,7 +2350,8 @@ def find_and_download_track(
     title,
     duration,
     output_folder,
-    youtube_url
+    source_url,
+    source
 ):
 
     print()
@@ -1974,9 +2381,14 @@ def find_and_download_track(
         filename
     )
 
-    # --------------------------------------------------------
-    # 1. Первый внешний источник
-    # --------------------------------------------------------
+    # ========================================================
+    # 1. MP3PARTY
+    # ========================================================
+
+    print()
+    print(
+        "Поиск: MP3Party..."
+    )
 
     result = search_mp3party(
         artist,
@@ -1995,9 +2407,14 @@ def find_and_download_track(
 
             return filepath
 
-    # --------------------------------------------------------
-    # 2. Второй внешний источник
-    # --------------------------------------------------------
+    # ========================================================
+    # 2. MP3TM
+    # ========================================================
+
+    print()
+    print(
+        "Поиск: MP3TM..."
+    )
 
     result = search_mp3tm(
         artist,
@@ -2016,9 +2433,14 @@ def find_and_download_track(
 
             return filepath
 
-    # --------------------------------------------------------
-    # 3. Третий внешний источник
-    # --------------------------------------------------------
+    # ========================================================
+    # 3. AUDIOSTART
+    # ========================================================
+
+    print()
+    print(
+        "Поиск: AudioStart..."
+    )
 
     result = search_audiostart(
         artist,
@@ -2037,16 +2459,32 @@ def find_and_download_track(
 
             return filepath
 
-    # --------------------------------------------------------
-    # 4. Резервный yt-dlp
-    # --------------------------------------------------------
+    # ========================================================
+    # 4. YT-DLP
+    #
+    # ВАЖНО:
+    # Только YouTube Music.
+    # Для Яндекс Музыки этот блок НЕ выполняется.
+    # ========================================================
 
-    if download_with_ytdlp(
-        youtube_url,
-        filepath
-    ):
+    if source == "youtube":
 
-        return filepath
+        if source_url:
+
+            if download_with_ytdlp(
+                source_url,
+                filepath
+            ):
+
+                return filepath
+
+    else:
+
+        print()
+        print(
+            "Резервный yt-dlp "
+            "для Яндекс Музыки не используется."
+        )
 
     print()
     print(
@@ -2066,12 +2504,17 @@ def process_single_track(
     output_folder
 ):
 
-    info = get_youtube_music_info(
+    info = get_track_info(
         url
     )
 
     if not info:
         return False
+
+    source = info.get(
+        "source",
+        "youtube"
+    )
 
     artist = info["artist"]
     title = info["title"]
@@ -2088,6 +2531,11 @@ def process_single_track(
     )
     print("=" * 50)
     print()
+
+    print(
+        "Источник:",
+        source
+    )
 
     print(
         "Исполнитель:",
@@ -2111,12 +2559,35 @@ def process_single_track(
         format_duration(duration)
     )
 
+    print(
+        "Обложка:",
+        "НАЙДЕНА"
+        if cover_url
+        else "НЕ НАЙДЕНА"
+    )
+
+    # ========================================================
+    # ВАЖНО
+    #
+    # Для Yandex source_url НЕ используется как источник
+    # аудио. Он передаётся только как информационный URL,
+    # а yt-dlp ниже вызывается исключительно при
+    # source == "youtube".
+    # ========================================================
+
+    search_source_url = (
+        url
+        if source == "youtube"
+        else None
+    )
+
     filepath = find_and_download_track(
         artist,
         title,
         duration,
         output_folder,
-        url
+        search_source_url,
+        source
     )
 
     if not filepath:
@@ -2446,7 +2917,7 @@ def main():
 
     url = input(
         "Ссылка на трек или "
-        "плейлист YouTube Music: "
+        "плейлист YouTube Music/Яндекс Музыка: "
     ).strip()
 
     if not url:
