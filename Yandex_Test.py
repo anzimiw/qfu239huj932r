@@ -586,46 +586,46 @@ def embed_cover(
             )
 
         except Exception:
-            pass
+    pass
 
-        tags = ID3()
+tags = ID3()
 
-        tags.add(
-            TIT2(
-                encoding=3,
-                text=[str(title)]
-            )
+tags.add(
+    TIT2(
+        encoding=3,
+        text=[str(title)]
+    )
+)
+
+tags.add(
+    TPE1(
+        encoding=3,
+        text=[str(artist)]
+    )
+)
+
+if album:
+    tags.add(
+        TALB(
+            encoding=3,
+            text=[str(album)]
         )
+    )
 
-        tags.add(
-            TPE1(
-                encoding=3,
-                text=[str(artist)]
-            )
-        )
+tags.add(
+    APIC(
+        encoding=3,
+        mime="image/jpeg",
+        type=3,
+        desc="Cover",
+        data=cover_bytes
+    )
+)
 
-        if album:
-
-            tags.add(
-                TALB(
-                    encoding=3,
-                    text=[str(album)]
-            )
-
-        tags.add(
-            APIC(
-                encoding=3,
-                mime="image/jpeg",
-                type=3,
-                desc="Cover",
-                data=cover_bytes
-            )
-        )
-
-        tags.save(
-            mp3_filepath,
-            v2_version=3
-        )
+tags.save(
+    mp3_filepath,
+    v2_version=3
+)
 
         print(
             "Обложка и теги успешно вшиты."
