@@ -302,20 +302,6 @@ def is_youtube_music_url(url):
     )
 
 
-def is_soundcloud_url(url):
-
-    if not url:
-        return False
-
-    url = url.lower()
-
-    return (
-        "soundcloud.com/" in url
-        or
-        "on.soundcloud.com/" in url
-    )
-
-
 # ============================================================
 # ЯНДЕКС — РАЗБОР URL
 # ============================================================
@@ -1084,16 +1070,6 @@ def get_youtube_music_info(url):
                 "информацию о треке."
             )
 
-            if result.stderr.strip():
-
-                print()
-                print(
-                    "Ошибка yt-dlp:"
-                )
-                print(
-                    result.stderr.strip()
-                )
-
             return None
 
         data = json.loads(
@@ -1199,199 +1175,6 @@ def get_youtube_music_info(url):
 
 
 # ============================================================
-# SOUNDCLOUD
-# ============================================================
-
-def get_soundcloud_info(url):
-
-    status(
-        "Получение информации из SoundCloud..."
-    )
-
-    command = [
-        YTDLP,
-        "--dump-single-json",
-        "--no-download",
-        "--no-playlist",
-        "--quiet",
-        "--no-warnings",
-        url
-    ]
-
-    try:
-
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=60
-        )
-
-        if result.returncode != 0:
-
-            print()
-            print(
-                "Не удалось получить "
-                "информацию из SoundCloud."
-            )
-
-            if result.stderr.strip():
-
-                print()
-                print(
-                    "Ошибка yt-dlp:"
-                )
-                print(
-                    result.stderr.strip()
-                )
-
-            return None
-
-        data = json.loads(
-            result.stdout
-        )
-
-        artist = (
-            data.get("artist")
-            or data.get("uploader")
-            or data.get("creator")
-        )
-
-        title = (
-            data.get("track")
-            or data.get("title")
-        )
-
-        album = (
-            data.get("album")
-            or ""
-        )
-
-        duration = data.get(
-            "duration"
-        )
-
-        cover_url = None
-
-        thumbnails = data.get(
-            "thumbnails"
-        )
-
-        if thumbnails:
-
-            cover_url = (
-                thumbnails[-1].get("url")
-            )
-
-        else:
-
-            cover_url = data.get(
-                "thumbnail"
-            )
-
-        if not artist or not title:
-
-            print()
-            print(
-                "Не удалось определить "
-                "исполнителя или название "
-                "SoundCloud-трека."
-            )
-
-            return None
-
-        print()
-        print(
-            "Метаданные SoundCloud получены."
-        )
-
-        print()
-        print(
-            "Исполнитель:",
-            artist
-        )
-
-        print(
-            "Название:",
-            title
-        )
-
-        print(
-            "Альбом:",
-            album or "не определён"
-        )
-
-        print(
-            "Длительность:",
-            format_duration(duration)
-        )
-
-        print(
-            "Обложка:",
-            "НАЙДЕНА"
-            if cover_url
-            else "НЕ НАЙДЕНА"
-        )
-
-        return {
-            "source": "soundcloud",
-            "artist": artist,
-            "title": title,
-            "album": album,
-            "duration": duration,
-            "cover_url": cover_url
-        }
-
-    except FileNotFoundError:
-
-        print()
-        print(
-            "ОШИБКА: yt-dlp.exe "
-            "не найден."
-        )
-
-        print(
-            "Ожидаемый путь:",
-            YTDLP
-        )
-
-        return None
-
-    except json.JSONDecodeError:
-
-        print()
-        print(
-            "ОШИБКА: SoundCloud/yt-dlp "
-            "не вернул корректный JSON."
-        )
-
-        return None
-
-    except subprocess.TimeoutExpired:
-
-        print()
-        print(
-            "ОШИБКА: получение данных "
-            "SoundCloud заняло слишком "
-            "много времени."
-        )
-
-        return None
-
-    except Exception as e:
-
-        print()
-        print(
-            "ОШИБКА SoundCloud:",
-            e
-        )
-
-        return None
-
-
-# ============================================================
 # ОБЩЕЕ ПОЛУЧЕНИЕ МЕТАДАННЫХ
 # ============================================================
 
@@ -1400,12 +1183,6 @@ def get_track_info(url):
     if is_yandex_music_url(url):
 
         return get_yandex_music_info(
-            url
-        )
-
-    if is_soundcloud_url(url):
-
-        return get_soundcloud_info(
             url
         )
 
@@ -2451,12 +2228,12 @@ def search_audiostart(
 # ============================================================
 
 def download_with_ytdlp(
-    source_url,
+    youtube_url,
     filepath
 ):
 
     status(
-        "Скачивание через yt-dlp..."
+        "Резервное скачивание..."
     )
 
     temp_template = (
@@ -2478,7 +2255,7 @@ def download_with_ytdlp(
         "0",
         "-o",
         temp_template,
-        source_url
+        youtube_url
     ]
 
     try:
@@ -2493,17 +2270,6 @@ def download_with_ytdlp(
         )
 
         if result.returncode != 0:
-
-            if result.stderr.strip():
-
-                print()
-                print(
-                    "Ошибка yt-dlp:"
-                )
-                print(
-                    result.stderr.strip()
-                )
-
             return False
 
         directory = os.path.dirname(
@@ -2566,19 +2332,12 @@ def download_with_ytdlp(
         )
 
         print(
-            "Файл готов."
+            "Резервный файл готов."
         )
 
         return True
 
-    except Exception as e:
-
-        print()
-        print(
-            "Ошибка yt-dlp:",
-            e
-        )
-
+    except Exception:
         return False
 
 
@@ -2623,39 +2382,12 @@ def find_and_download_track(
     )
 
     # ========================================================
-    # 1. SOUNDCLOUD
-    # ========================================================
-
-    if source == "soundcloud" and source_url:
-
-        print()
-        print(
-            "Источник №1: SoundCloud..."
-        )
-
-        if download_with_ytdlp(
-            source_url,
-            filepath
-        ):
-
-            return filepath
-
-        print()
-        print(
-            "SoundCloud не удалось скачать."
-        )
-
-        print(
-            "Переход к резервным источникам..."
-        )
-
-    # ========================================================
-    # 2. MP3PARTY
+    # 1. MP3PARTY
     # ========================================================
 
     print()
     print(
-        "Источник №2: MP3Party..."
+        "Поиск: MP3Party..."
     )
 
     result = search_mp3party(
@@ -2676,12 +2408,12 @@ def find_and_download_track(
             return filepath
 
     # ========================================================
-    # 3. MP3TM
+    # 2. MP3TM
     # ========================================================
 
     print()
     print(
-        "Источник №3: MP3TM..."
+        "Поиск: MP3TM..."
     )
 
     result = search_mp3tm(
@@ -2702,12 +2434,12 @@ def find_and_download_track(
             return filepath
 
     # ========================================================
-    # 4. AUDIOSTART
+    # 3. AUDIOSTART
     # ========================================================
 
     print()
     print(
-        "Источник №4: AudioStart..."
+        "Поиск: AudioStart..."
     )
 
     result = search_audiostart(
@@ -2728,21 +2460,16 @@ def find_and_download_track(
             return filepath
 
     # ========================================================
-    # 5. РЕЗЕРВНЫЙ YT-DLP
+    # 4. YT-DLP
     #
+    # ВАЖНО:
     # Только YouTube Music.
-    # Для SoundCloud он уже был использован выше.
-    # Для Яндекс Музыки не используется.
+    # Для Яндекс Музыки этот блок НЕ выполняется.
     # ========================================================
 
     if source == "youtube":
 
         if source_url:
-
-            print()
-            print(
-                "Источник №5: резервный yt-dlp..."
-            )
 
             if download_with_ytdlp(
                 source_url,
@@ -2751,21 +2478,12 @@ def find_and_download_track(
 
                 return filepath
 
-    elif source == "yandex":
+    else:
 
         print()
         print(
             "Резервный yt-dlp "
-            "для Яндекс Музыки "
-            "не используется."
-        )
-
-    elif source == "soundcloud":
-
-        print()
-        print(
-            "Резервный yt-dlp для SoundCloud "
-            "уже был использован первым."
+            "для Яндекс Музыки не используется."
         )
 
     print()
@@ -2849,20 +2567,17 @@ def process_single_track(
     )
 
     # ========================================================
-    # URL ИСХОДНОГО ИСТОЧНИКА
+    # ВАЖНО
     #
-    # Для YouTube и SoundCloud передаём исходную ссылку
-    # в резервный yt-dlp.
-    #
-    # Для Яндекс Музыки не передаём.
+    # Для Yandex source_url НЕ используется как источник
+    # аудио. Он передаётся только как информационный URL,
+    # а yt-dlp ниже вызывается исключительно при
+    # source == "youtube".
     # ========================================================
 
     search_source_url = (
         url
-        if source in (
-            "youtube",
-            "soundcloud"
-        )
+        if source == "youtube"
         else None
     )
 
@@ -3202,7 +2917,7 @@ def main():
 
     url = input(
         "Ссылка на трек или "
-        "плейлист YouTube Music/Яндекс Музыка/SoundCloud: "
+        "плейлист YouTube Music/Яндекс Музыка: "
     ).strip()
 
     if not url:
