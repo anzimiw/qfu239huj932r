@@ -3035,6 +3035,7 @@ def download_with_ytdlp(
     # 1. Обычный yt-dlp.
 
     try:
+        print("YouTube yt-dlp: subprocess.run() будет запущен.")
         result = subprocess.run(
             base_command,
             capture_output=True,
@@ -3313,6 +3314,12 @@ def find_and_download_track(
 
     # 5. YouTube / yt-dlp
 
+    # YOUTUBE_FALLBACK_DIAGNOSTIC_V2
+    print()
+    print("YouTube fallback: проверка финального этапа...")
+    print("YouTube fallback: source =", repr(source))
+    print("YouTube fallback: source_url =", repr(source_url))
+    print("YouTube fallback: LAST_YOUTUBE_ERROR =", repr(LAST_YOUTUBE_ERROR))
     if (
         source == "youtube"
         and source_url
