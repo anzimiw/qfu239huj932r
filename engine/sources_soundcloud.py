@@ -2030,6 +2030,276 @@ def search_soundcloud(
 
     return None
 
+def soundcloud_is_preview_only(
+    track_data
+):
+    """
+    Проверяет, предоставляет ли SoundCloud
+    только preview вместо полного трека.
+
+    Возвращает:
+
+        True
+            если доступен только preview;
+
+        False
+            если обнаружен полноценный поток;
+
+        None
+            если определить состояние невозможно.
+
+    Важно:
+
+    Эта функция НЕ определяет, подходит ли трек
+    по названию или исполнителю.
+
+    Она отвечает только за доступность полного
+    аудиопотока.
+    """
+
+    if not isinstance(
+        track_data,
+        dict
+    ):
+        return None
+
+    policy = str(
+        track_data.get(
+            "policy"
+        )
+        or ""
+    ).strip().upper()
+
+    access = str(
+        track_data.get(
+            "access"
+        )
+        or ""
+    ).strip().lower()
+
+    duration = track_data.get(
+        "duration"
+    )
+
+    full_duration = track_data.get(
+        "full_duration"
+    )
+
+    media = track_data.get(
+        "media"
+    )
+
+    if not isinstance(
+        media,
+        dict
+    ):
+        media = {}
+
+    transcodings = media.get(
+        "transcodings"
+    )
+
+    if not isinstance(
+        transcodings,
+        list
+    ):
+        transcodings = []
+
+    valid_transcodings = []
+
+    for transcoding in transcodings:
+
+        if not isinstance(
+            transcoding,
+            dict
+        ):
+            continue
+
+        url = str(
+            transcoding.get(
+                "url"
+            )
+            or ""
+        )
+
+        if not url:
+            continue
+
+        valid_transcodings.append(
+            transcoding
+        )
+
+    # --------------------------------------------------------
+    # Самый надёжный признак:
+    #
+    # SoundCloud сообщает SNIP и все transcoding
+    # помечены snipped=True.
+    # --------------------------------------------------------
+
+    if (
+        policy == "SNIP"
+        and valid_transcodings
+    ):
+
+        all_snipped = all(
+            item.get(
+                "snipped"
+            ) is True
+            for item in valid_transcodings
+        )
+
+        if all_snipped:
+
+            print(
+                "SoundCloud: полный трек "
+                "недоступен."
+            )
+
+            print(
+                "SoundCloud: SoundCloud "
+                "предоставил только preview."
+            )
+
+            if (
+                duration is not None
+                and full_duration is not None
+            ):
+                try:
+
+                    preview_seconds = (
+                        float(duration)
+                        / 1000.0
+                    )
+
+                    full_seconds = (
+                        float(full_duration)
+                        / 1000.0
+                    )
+
+                    print(
+                        "SoundCloud: длительность "
+                        "preview: "
+                        f"{preview_seconds:.3f} сек."
+                    )
+
+                    print(
+                        "SoundCloud: полная "
+                        "длительность: "
+                        f"{full_seconds:.3f} сек."
+                    )
+
+                except Exception:
+                    pass
+
+            return True
+
+    # --------------------------------------------------------
+    # access=preview
+    #
+    # Используем только если одновременно нет
+    # полноценного transcoding.
+    # --------------------------------------------------------
+
+    if access == "preview":
+
+        has_full = False
+
+        for transcoding in valid_transcodings:
+
+            if transcoding.get(
+                "snipped"
+            ) is not True:
+
+                has_full = True
+                break
+
+        if not has_full:
+
+            print(
+                "SoundCloud: полный трек "
+                "недоступен."
+            )
+
+            print(
+                "SoundCloud: доступен только "
+                "preview."
+            )
+
+            return True
+
+    # --------------------------------------------------------
+    # Проверяем transcoding непосредственно.
+    #
+    # Это позволяет обнаруживать preview даже если
+    # поле policy отсутствует.
+    # --------------------------------------------------------
+
+    if valid_transcodings:
+
+        has_full = False
+
+        for transcoding in valid_transcodings:
+
+            if transcoding.get(
+                "snipped"
+            ) is True:
+
+                continue
+
+            url = str(
+                transcoding.get(
+                    "url"
+                )
+                or ""
+            ).lower()
+
+            if (
+                "/preview/" not in url
+                and "/preview" not in url
+            ):
+
+                has_full = True
+                break
+
+        if not has_full:
+
+            all_preview = True
+
+            for transcoding in valid_transcodings:
+
+                url = str(
+                    transcoding.get(
+                        "url"
+                    )
+                    or ""
+                ).lower()
+
+                if (
+                    transcoding.get(
+                        "snipped"
+                    ) is not True
+                    and "/preview/" not in url
+                    and "/preview" not in url
+                ):
+                    all_preview = False
+                    break
+
+            if all_preview:
+
+                print(
+                    "SoundCloud: все доступные "
+                    "transcoding являются preview."
+                )
+
+                return True
+
+    # --------------------------------------------------------
+    # Явного признака preview-only нет.
+    # --------------------------------------------------------
+
+    return False
+
+
 def get_soundcloud_full_stream_url(
     soundcloud_url
 ):
