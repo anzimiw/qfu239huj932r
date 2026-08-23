@@ -2300,6 +2300,173 @@ def soundcloud_is_preview_only(
     return False
 
 
+
+
+def get_soundcloud_track_info(
+    soundcloud_url
+):
+    """
+    Получает полный JSON трека SoundCloud
+    через API resolve.
+
+    Используется только для определения
+    доступности полной версии / preview.
+    """
+
+    client_id = (
+        get_soundcloud_client_id()
+    )
+
+    if not client_id:
+        return None
+
+    try:
+
+        response = requests.get(
+            "https://api-v2.soundcloud.com/resolve",
+            params={
+                "url": soundcloud_url,
+                "client_id": client_id
+            },
+            headers=SOUNDCLOUD_HEADERS,
+            timeout=SOUNDCLOUD_SEARCH_TIMEOUT
+        )
+
+    except Exception:
+
+        return None
+
+    if response.status_code != 200:
+        return None
+
+    try:
+
+        data = response.json()
+
+    except Exception:
+
+        return None
+
+    if not isinstance(
+        data,
+        dict
+    ):
+
+        return None
+
+    return data
+
+
+
+
+def is_soundcloud_confirmed_preview(
+    track_info
+):
+    """
+    Возвращает True только если SoundCloud
+    явно сообщает, что доступно только
+    укороченное preview.
+
+    Условия:
+
+    policy == SNIP
+
+    duration < full_duration
+
+    существуют transcodings
+
+    ВСЕ transcoding имеют:
+        snipped == True
+    """
+
+    if not isinstance(
+        track_info,
+        dict
+    ):
+        return False
+
+    policy = str(
+        track_info.get("policy")
+        or ""
+    ).upper()
+
+    if policy != "SNIP":
+        return False
+
+    duration = track_info.get(
+        "duration"
+    )
+
+    full_duration = track_info.get(
+        "full_duration"
+    )
+
+    try:
+
+        duration = float(
+            duration
+        )
+
+        full_duration = float(
+            full_duration
+        )
+
+    except (
+        TypeError,
+        ValueError
+    ):
+
+        return False
+
+    if duration <= 0:
+        return False
+
+    if full_duration <= duration:
+        return False
+
+    transcodings = []
+
+    media = track_info.get(
+        "media"
+    )
+
+    if isinstance(
+        media,
+        dict
+    ):
+
+        transcodings = media.get(
+            "transcodings",
+            []
+        )
+
+    if not isinstance(
+        transcodings,
+        list
+    ):
+        return False
+
+    if not transcodings:
+        return False
+
+    all_snipped = all(
+        isinstance(
+            transcoding,
+            dict
+        )
+        and transcoding.get(
+            "snipped"
+        ) is True
+        for transcoding
+        in transcodings
+    )
+
+    if not all_snipped:
+        return False
+
+    return True
+
+
 def get_soundcloud_full_stream_url(
     soundcloud_url
 ):
@@ -3350,6 +3517,68 @@ def download_from_soundcloud(
             "SoundCloud: полноценный stream "
             "через API не получен."
         )
+
+        # ========================================================
+        # SOUNDCLOUD PREVIEW GATE
+        #
+        # Если API явно сообщает, что трек имеет
+        # policy=SNIP и все доступные transcoding
+        # являются snipped=True, НЕ запускаем yt-dlp.
+        #
+        # Это важно: 30-секундное preview не должно
+        # скачиваться только для того, чтобы потом
+        # ffprobe обнаружил неправильную длительность.
+        # ========================================================
+        try:
+            preview_track_info = (
+                get_soundcloud_track_info(
+                    soundcloud_url
+                )
+            )
+        except Exception:
+            preview_track_info = None
+
+        if is_soundcloud_confirmed_preview(
+            preview_track_info
+        ):
+            preview_duration = (
+                preview_track_info.get(
+                    "duration"
+                )
+            )
+            full_duration = (
+                preview_track_info.get(
+                    "full_duration"
+                )
+            )
+
+            print(
+                "SoundCloud: трек доступен "
+                "только как preview."
+            )
+
+            print(
+                "SoundCloud: длительность preview: "
+                f"{float(preview_duration) / 1000.0:.1f} сек."
+            )
+
+            print(
+                "SoundCloud: полная длительность: "
+                f"{float(full_duration) / 1000.0:.1f} сек."
+            )
+
+            print(
+                "SoundCloud: полная версия "
+                "недоступна для скачивания через API."
+            )
+
+            print(
+                "SoundCloud: yt-dlp не запускается "
+                "для preview."
+            )
+
+            return False
+
 
     # ========================================================
     # ПОПЫТКА 2:
