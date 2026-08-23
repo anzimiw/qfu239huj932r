@@ -1229,7 +1229,8 @@ def get_youtube_music_page_info(
                     "album": info.get("album") or "",
                     "duration": info.get("duration"),
                     "cover_url": info.get("cover_url"),
-                    "youtube_client": "webpage"
+                    "youtube_client": "webpage",
+                    "age_restricted": False
                 }
 
         # Дополнительный fallback:
@@ -1316,7 +1317,8 @@ def get_youtube_music_page_info(
                 "album": album,
                 "duration": duration,
                 "cover_url": cover_url,
-                "youtube_client": "webpage"
+                "youtube_client": "webpage",
+                "age_restricted": False
             }
 
     return None
@@ -1548,6 +1550,8 @@ def get_youtube_music_info(
             if info:
                 LAST_YOUTUBE_ERROR = ""
 
+                info["age_restricted"] = False
+
                 return info
 
             last_error = (
@@ -1626,6 +1630,22 @@ def get_youtube_music_info(
 
     if webpage_info:
         LAST_YOUTUBE_ERROR = ""
+
+        webpage_info["age_restricted"] = (
+            age_error_detected
+        )
+
+        if age_error_detected:
+            print()
+            print(
+                "YouTube: метаданные получены "
+                "через страницу, но ранее было "
+                "обнаружено подтверждение возраста."
+            )
+            print(
+                "YouTube: прямое скачивание "
+                "через yt-dlp будет запрещено."
+            )
 
         return webpage_info
 
@@ -3098,7 +3118,8 @@ def find_and_download_track(
     duration,
     output_folder,
     source_url,
-    source
+    source,
+    youtube_age_restricted=False
 ):
     print()
     print("=" * 60)
@@ -3296,11 +3317,43 @@ def find_and_download_track(
         source == "youtube"
         and source_url
     ):
-        if download_with_ytdlp(
-            source_url,
-            filepath
-        ):
-            return filepath
+
+        if youtube_age_restricted:
+
+            print()
+            print(
+                "YouTube: требуется "
+                "подтверждение возраста."
+            )
+
+            print(
+                "YouTube: резервное скачивание "
+                "через yt-dlp пропущено."
+            )
+
+        else:
+
+            print()
+            print(
+                "Все сторонние источники "
+                "не подошли."
+            )
+
+            print(
+                "YouTube: подтверждение возраста "
+                "не требуется."
+            )
+
+            print(
+                "YouTube: запускается резервное "
+                "скачивание через yt-dlp..."
+            )
+
+            if download_with_ytdlp(
+                source_url,
+                filepath
+            ):
+                return filepath
 
     print(
         "Не удалось скачать "
@@ -3349,6 +3402,13 @@ def process_single_track(
     source = info.get(
         "source",
         "youtube"
+    )
+
+    youtube_age_restricted = bool(
+        info.get(
+            "age_restricted",
+            False
+        )
     )
 
     artist = info["artist"]
