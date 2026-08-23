@@ -9,6 +9,10 @@ import subprocess
 import requests
 from urllib.parse import unquote
 
+ENGINE_FOLDER = os.patch.dirname(
+    os.patch.abspath(__file__)
+)
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
