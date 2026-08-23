@@ -18,6 +18,8 @@ from sources_soundcloud import (
     download_from_soundcloud,
 )
 
+from sources_mp3party import search_mp3party
+
 ENGINE_FOLDER = os.path.dirname(
     os.path.abspath(__file__)
 )
@@ -2762,93 +2764,6 @@ def is_duration_acceptable(
         <= tolerance
     )
 
-def search_mp3party(
-    artist,
-    title,
-    target_duration=None
-):
-    try:
-        response = requests.get(
-            "https://mp3party.net/search",
-            params={
-                "q": f"{artist} {title}"
-            },
-            headers=HEADERS,
-            timeout=TIMEOUT
-        )
-
-        if response.status_code != 200:
-            return None
-
-        text = html.unescape(
-            response.text
-        )
-
-        pattern = re.compile(
-            r'<div class="track__user-panel"[^>]*'
-            r'data-js-artist-name="([^"]+)"'
-            r'[^>]*data-js-id="(\d+)"'
-            r'[^>]*data-js-song-title="([^"]+)"'
-            r'[^>]*data-js-url="([^"]+)"',
-            re.I
-        )
-
-        candidates = []
-
-        for (
-            found_artist,
-            song_id,
-            found_title,
-            found_url
-        ) in pattern.findall(text):
-
-            score = candidate_text_score(
-                f"{found_artist} - {found_title}",
-                artist,
-                title
-            )
-
-            if score < 0:
-                continue
-
-            candidates.append({
-                "url": (
-                    "https://dl2.mp3party.net/"
-                    f"download/{song_id}"
-                ),
-                "referer": (
-                    f"https://mp3party.net/music/"
-                    f"{song_id}"
-                ),
-                "text_score": score
-            })
-
-        if not candidates:
-            return None
-
-        candidates.sort(
-            key=lambda x: x["text_score"],
-            reverse=True
-        )
-
-        for candidate in candidates[:10]:
-            duration = get_duration(
-                candidate["url"]
-            )
-
-            if is_duration_acceptable(
-                duration,
-                target_duration
-            ):
-                return {
-                    "url": candidate["url"],
-                    "referer": candidate["referer"]
-                }
-
-    except Exception:
-        pass
-
-    return None
 
 def search_mp3tm(
     artist,
