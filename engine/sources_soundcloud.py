@@ -1915,6 +1915,66 @@ def search_soundcloud(
             f"этапа {stage_number}."
         )
 
+        # SOUNDCLOUD_NEXT_CANDIDATES_V4
+        # Существующий scoring НЕ изменяется.
+        # TOP 1 остаётся основным результатом.
+        # Остальные кандидаты передаются downloader'у
+        # в уже существующем порядке score.
+        alternatives = []
+        
+        for alternative_item in candidates[1:5]:
+            alternative_candidate = alternative_item["candidate"]
+        
+            alternative_title = str(
+                alternative_candidate.get("title")
+                or ""
+            ).strip()
+        
+            alternative_user = alternative_candidate.get("user")
+        
+            if isinstance(alternative_user, dict):
+                alternative_artist = str(
+                    alternative_user.get("username")
+                    or ""
+                ).strip()
+            else:
+                alternative_artist = ""
+        
+            alternative_url = (
+                alternative_candidate.get("permalink_url")
+                or alternative_candidate.get("uri")
+                or ""
+            )
+        
+            if not alternative_url:
+                continue
+        
+            alternatives.append({
+                "url": alternative_url,
+                "title": alternative_title,
+                "artist": alternative_artist,
+                "duration": alternative_candidate.get("duration"),
+                "score": alternative_item["score"],
+                "candidate": alternative_candidate,
+                "search_stage": stage_number,
+                "search_query": query,
+                "exact_match": (
+                    alternative_item["score"] >= 900
+                    and (
+                        alternative_item.get(
+                            "title_ratio",
+                            0
+                        ) >= 1.0
+                    )
+                    and (
+                        alternative_item.get(
+                            "artist_ratio",
+                            0
+                        ) >= 1.0
+                    )
+                ),
+            })
+        
         return {
             "url": candidate_url,
             "title": candidate_title,
@@ -1947,6 +2007,7 @@ def search_soundcloud(
                     >= 1.0
                 )
             ),
+        "alternatives": alternatives,
         }
 
     print()
