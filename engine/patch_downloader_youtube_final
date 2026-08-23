@@ -1,1 +1,1014 @@
+import ast
+import os
+import py_compile
+import shutil
+import sys
+from datetime import datetime
 
+
+ENGINE_DIR = os.path.dirname(
+    os.path.abspath(__file__)
+)
+
+DOWNLOADER = os.path.join(
+    ENGINE_DIR,
+    "downloader.py"
+)
+
+SOUNDCLOUD_MODULE = os.path.join(
+    ENGINE_DIR,
+    "sources_soundcloud.py"
+)
+
+MAX_CANDIDATES = 5
+
+
+MOVE_LOGIC_MARKER = (
+    "SOUNDCLOUD_NEXT_CANDIDATES_V4"
+)
+
+
+def fail(message):
+    raise RuntimeError(message)
+
+
+def read_text(path):
+    with open(
+        path,
+        "r",
+        encoding="utf-8"
+    ) as f:
+        return f.read()
+
+
+def write_text(path, text):
+    with open(
+        path,
+        "w",
+        encoding="utf-8",
+        newline=""
+    ) as f:
+        f.write(text)
+
+
+def parse(source, label):
+    try:
+        return ast.parse(source)
+    except SyntaxError as error:
+        fail(
+            f"{label} содержит синтаксическую ошибку:\n"
+            f"{error}"
+        )
+
+
+def top_functions(tree):
+    return {
+        node.name: node
+        for node in tree.body
+        if isinstance(
+            node,
+            (
+                ast.FunctionDef,
+                ast.AsyncFunctionDef
+            )
+        )
+    }
+
+
+def node_source(source, node):
+    lines = source.splitlines(
+        keepends=True
+    )
+
+    return "".join(
+        lines[
+            node.lineno - 1:
+            node.end_lineno
+        ]
+    )
+
+
+def make_backup(path):
+    stamp = datetime.now().strftime(
+        "%Y%m%d_%H%M%S"
+    )
+
+    backup = os.path.join(
+        ENGINE_DIR,
+        os.path.basename(path)
+        + ".backup_next_candidates_"
+        + stamp
+    )
+
+    shutil.copy2(
+        path,
+        backup
+    )
+
+    return backup
+
+
+def find_function(tree, name):
+    for node in tree.body:
+        if (
+            isinstance(
+                node,
+                (
+                    ast.FunctionDef,
+                    ast.AsyncFunctionDef
+                )
+            )
+            and node.name == name
+        ):
+            return node
+
+    return None
+
+
+def find_last_dict_return(function_node):
+    returns = []
+
+    for node in ast.walk(
+        function_node
+    ):
+        if isinstance(
+            node,
+            ast.Return
+        ):
+            returns.append(node)
+
+    returns.sort(
+        key=lambda node: (
+            node.lineno,
+            node.end_lineno
+        )
+    )
+
+    for node in reversed(
+        returns
+    ):
+        if isinstance(
+            node.value,
+            ast.Dict
+        ):
+            return node
+
+    return None
+
+
+def find_soundcloud_download_if(
+    function_node
+):
+    matches = []
+
+    for node in ast.walk(
+        function_node
+    ):
+
+        if not isinstance(
+            node,
+            ast.If
+        ):
+            continue
+
+        for child in ast.walk(
+            node.test
+        ):
+
+            if not isinstance(
+                child,
+                ast.Call
+            ):
+                continue
+
+            if not isinstance(
+                child.func,
+                ast.Name
+            ):
+                continue
+
+            if (
+                child.func.id
+                == "download_from_soundcloud"
+            ):
+                matches.append(
+                    node
+                )
+                break
+
+    matches.sort(
+        key=lambda node: (
+            node.lineno,
+            node.end_lineno
+        )
+    )
+
+    if not matches:
+        return None
+
+    return matches[0]
+
+
+def patch_sources_soundcloud(
+    source
+):
+    if MOVE_LOGIC_MARKER in source:
+        fail(
+            "sources_soundcloud.py уже содержит "
+            "маркер V4. Патч уже применён."
+        )
+
+    tree = parse(
+        source,
+        "sources_soundcloud.py"
+    )
+
+    function = find_function(
+        tree,
+        "search_soundcloud"
+    )
+
+    if function is None:
+        fail(
+            "Функция search_soundcloud() "
+            "не найдена."
+        )
+
+    return_node = find_last_dict_return(
+        function
+    )
+
+    if return_node is None:
+        fail(
+            "В search_soundcloud() "
+            "не найден return со словарём."
+        )
+
+    lines = source.splitlines(
+        keepends=True
+    )
+
+    # --------------------------------------------------------
+    # 1. Вставляем построение alternatives
+    # непосредственно перед финальным return.
+    # --------------------------------------------------------
+
+    return_line_index = (
+        return_node.lineno - 1
+    )
+
+    indent = (
+        " "
+        * (
+            len(
+                lines[
+                    return_line_index
+                ]
+            )
+            - len(
+                lines[
+                    return_line_index
+                ].lstrip()
+            )
+        )
+    )
+
+    alternatives_code = f'''{indent}# {MOVE_LOGIC_MARKER}
+{indent}# Существующий scoring НЕ изменяется.
+{indent}# TOP 1 остаётся основным результатом.
+{indent}# Остальные кандидаты передаются downloader'у
+{indent}# в уже существующем порядке score.
+{indent}alternatives = []
+{indent}
+{indent}for alternative_item in candidates[1:{MAX_CANDIDATES}]:
+{indent}    alternative_candidate = alternative_item["candidate"]
+{indent}
+{indent}    alternative_title = str(
+{indent}        alternative_candidate.get("title")
+{indent}        or ""
+{indent}    ).strip()
+{indent}
+{indent}    alternative_user = alternative_candidate.get("user")
+{indent}
+{indent}    if isinstance(alternative_user, dict):
+{indent}        alternative_artist = str(
+{indent}            alternative_user.get("username")
+{indent}            or ""
+{indent}        ).strip()
+{indent}    else:
+{indent}        alternative_artist = ""
+{indent}
+{indent}    alternative_url = (
+{indent}        alternative_candidate.get("permalink_url")
+{indent}        or alternative_candidate.get("uri")
+{indent}        or ""
+{indent}    )
+{indent}
+{indent}    if not alternative_url:
+{indent}        continue
+{indent}
+{indent}    alternatives.append({{
+{indent}        "url": alternative_url,
+{indent}        "title": alternative_title,
+{indent}        "artist": alternative_artist,
+{indent}        "duration": alternative_candidate.get("duration"),
+{indent}        "score": alternative_item["score"],
+{indent}        "candidate": alternative_candidate,
+{indent}        "search_stage": stage_number,
+{indent}        "search_query": query,
+{indent}        "exact_match": (
+{indent}            alternative_item["score"] >= 900
+{indent}            and (
+{indent}                alternative_item.get(
+{indent}                    "title_ratio",
+{indent}                    0
+{indent}                ) >= 1.0
+{indent}            )
+{indent}            and (
+{indent}                alternative_item.get(
+{indent}                    "artist_ratio",
+{indent}                    0
+{indent}                ) >= 1.0
+{indent}            )
+{indent}        ),
+{indent}    }})
+{indent}
+'''
+
+    lines.insert(
+        return_line_index,
+        alternatives_code
+    )
+
+    # --------------------------------------------------------
+    # После вставки индексы AST устарели.
+    # Для добавления поля alternatives используем
+    # исходную позицию закрывающей фигурной скобки.
+    #
+    # Самый безопасный вариант:
+    # повторно парсим изменённый текст и снова находим
+    # финальный dict return.
+    # --------------------------------------------------------
+
+    intermediate = "".join(
+        lines
+    )
+
+    intermediate_tree = parse(
+        intermediate,
+        "промежуточный sources_soundcloud.py"
+    )
+
+    intermediate_function = find_function(
+        intermediate_tree,
+        "search_soundcloud"
+    )
+
+    intermediate_return = find_last_dict_return(
+        intermediate_function
+    )
+
+    if intermediate_return is None:
+        fail(
+            "После вставки alternatives "
+            "не найден return со словарём."
+        )
+
+    # --------------------------------------------------------
+    # Ищем строку, на которой заканчивается словарь return.
+    # Добавляем поле перед закрывающей }.
+    # --------------------------------------------------------
+
+    lines = intermediate.splitlines(
+        keepends=True
+    )
+
+    dict_end_index = (
+        intermediate_return.value.end_lineno
+        - 1
+    )
+
+    dict_end_line = lines[
+        dict_end_index
+    ]
+
+    closing_indent = (
+        " "
+        * (
+            len(dict_end_line)
+            - len(
+                dict_end_line.lstrip()
+            )
+        )
+    )
+
+    lines.insert(
+        dict_end_index,
+        (
+            closing_indent
+            + '"alternatives": alternatives,\n'
+        )
+    )
+
+    result = "".join(
+        lines
+    )
+
+    # Финальная проверка.
+    result_tree = parse(
+        result,
+        "изменённый sources_soundcloud.py"
+    )
+
+    result_function = find_function(
+        result_tree,
+        "search_soundcloud"
+    )
+
+    if result_function is None:
+        fail(
+            "После изменения "
+            "search_soundcloud() исчезла."
+        )
+
+    if MOVE_LOGIC_MARKER not in result:
+        fail(
+            "Маркер V4 не найден после изменения."
+        )
+
+    if '"alternatives": alternatives' not in result:
+        fail(
+            "Поле alternatives не добавлено."
+        )
+
+    return result
+
+
+def patch_downloader(
+    source
+):
+    if MOVE_LOGIC_MARKER in source:
+        fail(
+            "downloader.py уже содержит "
+            "маркер V4. Патч уже применён."
+        )
+
+    tree = parse(
+        source,
+        "downloader.py"
+    )
+
+    function = find_function(
+        tree,
+        "find_and_download_track"
+    )
+
+    if function is None:
+        fail(
+            "Функция find_and_download_track() "
+            "не найдена."
+        )
+
+    target_if = find_soundcloud_download_if(
+        function
+    )
+
+    if target_if is None:
+        fail(
+            "В find_and_download_track() "
+            "не найден вызов "
+            "download_from_soundcloud()."
+        )
+
+    old = node_source(
+        source,
+        target_if
+    )
+
+    # --------------------------------------------------------
+    # Определяем отступ существующего if.
+    # --------------------------------------------------------
+
+    first_line = old.splitlines(
+        keepends=True
+    )[0]
+
+    indent = (
+        " "
+        * (
+            len(first_line)
+            - len(first_line.lstrip())
+        )
+    )
+
+    replacement = f'''{indent}if result:
+{indent}    # {MOVE_LOGIC_MARKER}
+{indent}    #
+{indent}    # search_soundcloud() сохраняет существующий
+{indent}    # порядок кандидатов по score.
+{indent}    #
+{indent}    # Сначала пробуем TOP 1.
+{indent}    # Если download_from_soundcloud() отклоняет
+{indent}    # файл из-за длительности или другой ошибки,
+{indent}    # пробуем TOP 2, TOP 3 и TOP 4.
+{indent}    #
+{indent}    # Логика scoring SoundCloud здесь НЕ меняется.
+
+{indent}    soundcloud_candidates = [
+{indent}        result
+{indent}    ]
+
+{indent}    alternatives = result.get(
+{indent}        "alternatives",
+{indent}        []
+{indent}    )
+
+{indent}    if isinstance(
+{indent}        alternatives,
+{indent}        list
+{indent}    ):
+{indent}        soundcloud_candidates.extend(
+{indent}            alternatives
+{indent}        )
+
+{indent}    soundcloud_candidates = (
+{indent}        soundcloud_candidates[:{MAX_CANDIDATES}]
+{indent}    )
+
+{indent}    print(
+{indent}        "SoundCloud: кандидатов "
+{indent}        "для проверки: "
+{indent}        f"{{len(soundcloud_candidates)}}"
+{indent}    )
+
+{indent}    for candidate_index, candidate_result in enumerate(
+{indent}        soundcloud_candidates,
+{indent}        1
+{indent}    ):
+
+{indent}        print()
+{indent}        print(
+{indent}            "SoundCloud: проверка кандидата "
+{indent}            f"{{candidate_index}}/"
+{indent}            f"{{len(soundcloud_candidates)}}"
+{indent}        )
+
+{indent}        print(
+{indent}            "SoundCloud: score: "
+{indent}            f"{{candidate_result.get('score', 0):.1f}}"
+{indent}        )
+
+{indent}        print(
+{indent}            "SoundCloud: название кандидата: "
+{indent}            f"{{candidate_result.get('title', '')}}"
+{indent}        )
+
+{indent}        print(
+{indent}            "SoundCloud: исполнитель кандидата: "
+{indent}            f"{{candidate_result.get('artist', '')}}"
+{indent}        )
+
+{indent}        candidate_url = (
+{indent}            candidate_result.get("url")
+{indent}        )
+
+{indent}        if not candidate_url:
+{indent}            print(
+{indent}                "SoundCloud: у кандидата "
+{indent}                "отсутствует URL. Пропуск."
+{indent}            )
+{indent}            continue
+
+{indent}        if download_from_soundcloud(
+{indent}            candidate_url,
+{indent}            filepath,
+{indent}            duration,
+{indent}            candidate_result.get(
+{indent}                "exact_match",
+{indent}                False
+{indent}            )
+{indent}        ):
+{indent}            print(
+{indent}                "SoundCloud: кандидат "
+{indent}                f"{{candidate_index}} подходит."
+{indent}            )
+{indent}            return filepath
+
+{indent}        print(
+{indent}            "SoundCloud: кандидат "
+{indent}            f"{{candidate_index}} не подошёл."
+{indent}        )
+
+{indent}    print(
+{indent}        "SoundCloud: все кандидаты "
+{indent}        "не подошли."
+{indent}    )
+'''
+
+    lines = source.splitlines(
+        keepends=True
+    )
+
+    start = (
+        target_if.lineno - 1
+    )
+
+    end = (
+        target_if.end_lineno
+    )
+
+    lines[
+        start:end
+    ] = [
+        replacement
+    ]
+
+    result = "".join(
+        lines
+    )
+
+    parse(
+        result,
+        "изменённый downloader.py"
+    )
+
+    if MOVE_LOGIC_MARKER not in result:
+        fail(
+            "Маркер V4 не найден "
+            "в downloader.py."
+        )
+
+    return result
+
+
+def validate_sources(
+    source
+):
+    tree = parse(
+        source,
+        "sources_soundcloud.py"
+    )
+
+    function = find_function(
+        tree,
+        "search_soundcloud"
+    )
+
+    if function is None:
+        fail(
+            "search_soundcloud() "
+            "отсутствует после патча."
+        )
+
+    if MOVE_LOGIC_MARKER not in source:
+        fail(
+            "Маркер V4 отсутствует "
+            "в sources_soundcloud.py."
+        )
+
+    if '"alternatives": alternatives' not in source:
+        fail(
+            "Поле alternatives отсутствует "
+            "в sources_soundcloud.py."
+        )
+
+
+def validate_downloader(
+    source
+):
+    tree = parse(
+        source,
+        "downloader.py"
+    )
+
+    function = find_function(
+        tree,
+        "find_and_download_track"
+    )
+
+    if function is None:
+        fail(
+            "find_and_download_track() "
+            "отсутствует после патча."
+        )
+
+    if MOVE_LOGIC_MARKER not in source:
+        fail(
+            "Маркер V4 отсутствует "
+            "в downloader.py."
+        )
+
+
+def main():
+
+    print("=" * 70)
+    print(
+        "CENSURU.NET — SOUNDCLOUD "
+        "NEXT CANDIDATES V4"
+    )
+    print("=" * 70)
+
+    if not os.path.isfile(
+        SOUNDCLOUD_MODULE
+    ):
+        fail(
+            "Не найден sources_soundcloud.py:\n"
+            + SOUNDCLOUD_MODULE
+        )
+
+    if not os.path.isfile(
+        DOWNLOADER
+    ):
+        fail(
+            "Не найден downloader.py:\n"
+            + DOWNLOADER
+        )
+
+    print(
+        "\n1/8: проверка текущих файлов..."
+    )
+
+    sources_original = read_text(
+        SOUNDCLOUD_MODULE
+    )
+
+    downloader_original = read_text(
+        DOWNLOADER
+    )
+
+    parse(
+        sources_original,
+        "sources_soundcloud.py"
+    )
+
+    parse(
+        downloader_original,
+        "downloader.py"
+    )
+
+    print(
+        "  OK: синтаксис."
+    )
+
+    print(
+        "\n2/8: проверка структуры..."
+    )
+
+    sources_tree = parse(
+        sources_original,
+        "sources_soundcloud.py"
+    )
+
+    downloader_tree = parse(
+        downloader_original,
+        "downloader.py"
+    )
+
+    if find_function(
+        sources_tree,
+        "search_soundcloud"
+    ) is None:
+        fail(
+            "search_soundcloud() "
+            "не найдена."
+        )
+
+    if find_function(
+        downloader_tree,
+        "find_and_download_track"
+    ) is None:
+        fail(
+            "find_and_download_track() "
+            "не найдена."
+        )
+
+    if MOVE_LOGIC_MARKER in sources_original:
+        fail(
+            "sources_soundcloud.py уже содержит "
+            "патч V4."
+        )
+
+    if MOVE_LOGIC_MARKER in downloader_original:
+        fail(
+            "downloader.py уже содержит "
+            "патч V4."
+        )
+
+    print(
+        "  OK: структура подходит."
+    )
+
+    print(
+        "\n3/8: создание резервных копий..."
+    )
+
+    backup_sources = make_backup(
+        SOUNDCLOUD_MODULE
+    )
+
+    backup_downloader = make_backup(
+        DOWNLOADER
+    )
+
+    print(
+        "  Backup sources_soundcloud.py:"
+    )
+
+    print(
+        "  " + backup_sources
+    )
+
+    print(
+        "  Backup downloader.py:"
+    )
+
+    print(
+        "  " + backup_downloader
+    )
+
+    try:
+
+        print(
+            "\n4/8: изменение "
+            "sources_soundcloud.py..."
+        )
+
+        sources_patched = (
+            patch_sources_soundcloud(
+                sources_original
+            )
+        )
+
+        write_text(
+            SOUNDCLOUD_MODULE,
+            sources_patched
+        )
+
+        print(
+            "  OK."
+        )
+
+        print(
+            "\n5/8: проверка "
+            "sources_soundcloud.py..."
+        )
+
+        py_compile.compile(
+            SOUNDCLOUD_MODULE,
+            doraise=True
+        )
+
+        validate_sources(
+            sources_patched
+        )
+
+        print(
+            "  OK: синтаксис и структура."
+        )
+
+        print(
+            "\n6/8: изменение downloader.py..."
+        )
+
+        downloader_patched = (
+            patch_downloader(
+                downloader_original
+            )
+        )
+
+        write_text(
+            DOWNLOADER,
+            downloader_patched
+        )
+
+        print(
+            "  OK."
+        )
+
+        print(
+            "\n7/8: проверка downloader.py..."
+        )
+
+        py_compile.compile(
+            DOWNLOADER,
+            doraise=True
+        )
+
+        validate_downloader(
+            downloader_patched
+        )
+
+        print(
+            "  OK: синтаксис и структура."
+        )
+
+        print(
+            "\n8/8: финальная проверка..."
+        )
+
+        py_compile.compile(
+            SOUNDCLOUD_MODULE,
+            doraise=True
+        )
+
+        py_compile.compile(
+            DOWNLOADER,
+            doraise=True
+        )
+
+        print(
+            "  OK: оба файла "
+            "успешно компилируются."
+        )
+
+    except Exception:
+
+        print(
+            "\nОШИБКА: выполняю полный откат..."
+        )
+
+        shutil.copy2(
+            backup_sources,
+            SOUNDCLOUD_MODULE
+        )
+
+        shutil.copy2(
+            backup_downloader,
+            DOWNLOADER
+        )
+
+        print(
+            "  sources_soundcloud.py восстановлен."
+        )
+
+        print(
+            "  downloader.py восстановлен."
+        )
+
+        raise
+
+    print()
+    print("=" * 70)
+    print(
+        "ПАТЧ V4 УСПЕШНО ПРИМЕНЁН"
+    )
+    print("=" * 70)
+
+    print()
+    print(
+        "SoundCloud теперь проверяет "
+        f"до {MAX_CANDIDATES} кандидатов."
+    )
+
+    print(
+        "Порядок существующего scoring "
+        "не изменён."
+    )
+
+    print(
+        "Каскад из 4 этапов "
+        "не изменён."
+    )
+
+    print(
+        "download_from_soundcloud() "
+        "не изменён."
+    )
+
+    print()
+    print(
+        "Backup sources_soundcloud.py:"
+    )
+    print(
+        backup_sources
+    )
+
+    print(
+        "Backup downloader.py:"
+    )
+
+    print(
+        backup_downloader
+    )
+
+
+if __name__ == "__main__":
+
+    try:
+        main()
+
+    except Exception as error:
+
+        print()
+        print("=" * 70)
+        print(
+            "ОШИБКА ПРИ ИЗМЕНЕНИИ SOUNDCLOUD"
+        )
+        print("=" * 70)
+
+        print(
+            f"{type(error).__name__}: "
+            f"{error}"
+        )
+
+        sys.exit(1)
