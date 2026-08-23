@@ -2030,6 +2030,465 @@ def search_soundcloud(
 
     return None
 
+def get_soundcloud_full_stream_url(
+    soundcloud_url
+):
+    """
+    Пытается получить полноценный SoundCloud
+    stream URL напрямую через API.
+
+    ВАЖНО:
+    - preview URL специально отбрасываются;
+    - существующая yt-dlp загрузка остаётся
+      резервным способом;
+    - функция ничего не пытается
+      "растягивать" или подменять;
+    - если SoundCloud действительно отдаёт
+      только preview, возвращается None.
+    """
+
+    if not soundcloud_url:
+        return None
+
+    client_id = (
+        get_soundcloud_client_id()
+    )
+
+    if not client_id:
+        print(
+            "SoundCloud: client_id "
+            "не получен для прямого stream API."
+        )
+
+        return None
+
+    try:
+        # ----------------------------------------------------
+        # 1. Resolve URL -> полная информация о треке
+        # ----------------------------------------------------
+
+        resolve_response = requests.get(
+            "https://api-v2.soundcloud.com/resolve",
+            params={
+                "url": soundcloud_url,
+                "client_id": client_id,
+            },
+            headers=SOUNDCLOUD_HEADERS,
+            timeout=SOUNDCLOUD_SEARCH_TIMEOUT
+        )
+
+        print(
+            "SoundCloud API: resolve HTTP-код: "
+            f"{resolve_response.status_code}"
+        )
+
+        if resolve_response.status_code != 200:
+            return None
+
+        track_info = (
+            resolve_response.json()
+        )
+
+        if not isinstance(
+            track_info,
+            dict
+        ):
+            return None
+
+        track_id = (
+            track_info.get("id")
+        )
+
+        if not track_id:
+            print(
+                "SoundCloud API: "
+                "track_id не найден."
+            )
+
+            return None
+
+        print(
+            "SoundCloud API: "
+            f"track_id: {track_id}"
+        )
+
+        # ----------------------------------------------------
+        # 2. Сначала пытаемся получить
+        #    streams endpoint.
+        # ----------------------------------------------------
+
+        streams_urls = [
+            (
+                "https://api-v2.soundcloud.com/"
+                f"tracks/{track_id}/streams"
+            ),
+            (
+                "https://api.soundcloud.com/"
+                f"tracks/{track_id}/streams"
+            ),
+        ]
+
+        for streams_url in streams_urls:
+
+            try:
+
+                response = requests.get(
+                    streams_url,
+                    params={
+                        "client_id": client_id,
+                    },
+                    headers=SOUNDCLOUD_HEADERS,
+                    timeout=SOUNDCLOUD_SEARCH_TIMEOUT
+                )
+
+            except Exception:
+                continue
+
+            print(
+                "SoundCloud API: streams HTTP-код: "
+                f"{response.status_code}"
+            )
+
+            if response.status_code != 200:
+                continue
+
+            try:
+                streams_data = response.json()
+            except Exception:
+                continue
+
+            if not isinstance(
+                streams_data,
+                dict
+            ):
+                continue
+
+            # ------------------------------------------------
+            # Возможные ключи:
+            #
+            # http_mp3
+            # hls_mp3
+            # http_aac
+            # hls_aac
+            # ------------------------------------------------
+
+            preferred_keys = (
+                "http_mp3",
+                "hls_mp3",
+                "http_aac",
+                "hls_aac",
+                "http_opus",
+                "hls_opus",
+            )
+
+            for key in preferred_keys:
+
+                stream_url = (
+                    streams_data.get(key)
+                )
+
+                if not isinstance(
+                    stream_url,
+                    str
+                ):
+                    continue
+
+                if not stream_url:
+                    continue
+
+                lowered = (
+                    stream_url.lower()
+                )
+
+                if "/preview/" in lowered:
+                    print(
+                        "SoundCloud API: "
+                        f"{key} является preview, "
+                        "пропускаем."
+                    )
+
+                    continue
+
+                print(
+                    "SoundCloud API: "
+                    f"найден полноценный stream: "
+                    f"{key}"
+                )
+
+                return stream_url
+
+        # ----------------------------------------------------
+        # 3. Новый API: media.transcodings
+        #
+        # Это тот же механизм, который использует
+        # современный yt-dlp extractor SoundCloud.
+        # ----------------------------------------------------
+
+        transcodings = (
+            track_info
+            .get("media", {})
+            .get("transcodings", [])
+        )
+
+        if not isinstance(
+            transcodings,
+            list
+        ):
+            transcodings = []
+
+        print(
+            "SoundCloud API: "
+            "transcodings: "
+            f"{len(transcodings)}"
+        )
+
+        # Сначала ищем MP3, затем AAC.
+        preferred_protocols = (
+            "progressive",
+            "http",
+            "hls",
+        )
+
+        ordered = []
+
+        for transcoding in transcodings:
+
+            if not isinstance(
+                transcoding,
+                dict
+            ):
+                continue
+
+            transcoding_url = (
+                transcoding.get("url")
+            )
+
+            if not transcoding_url:
+                continue
+
+            preset = str(
+                transcoding.get("preset")
+                or ""
+            ).lower()
+
+            format_data = (
+                transcoding.get("format")
+            )
+
+            if not isinstance(
+                format_data,
+                dict
+            ):
+                format_data = {}
+
+            protocol = str(
+                format_data.get(
+                    "protocol"
+                )
+                or ""
+            ).lower()
+
+            # ------------------------------------------------
+            # ЖЁСТКО исключаем preview.
+            # ------------------------------------------------
+
+            if transcoding.get(
+                "snipped"
+            ):
+                print(
+                    "SoundCloud API: "
+                    f"preview transcoding: "
+                    f"{preset}"
+                )
+
+                continue
+
+            if "/preview/" in str(
+                transcoding_url
+            ).lower():
+                print(
+                    "SoundCloud API: "
+                    f"URL preview: "
+                    f"{preset}"
+                )
+
+                continue
+
+            if "preview" in preset:
+                print(
+                    "SoundCloud API: "
+                    f"preset preview: "
+                    f"{preset}"
+                )
+
+                continue
+
+            # Приоритет:
+            # mp3 > aac > opus
+            if "mp3" in preset:
+                quality = 0
+            elif "aac" in preset:
+                quality = 1
+            elif "opus" in preset:
+                quality = 2
+            else:
+                quality = 3
+
+            # progressive/http предпочтительнее HLS.
+            protocol_quality = (
+                0
+                if protocol in (
+                    "progressive",
+                    "http"
+                )
+                else 1
+            )
+
+            ordered.append(
+                (
+                    quality,
+                    protocol_quality,
+                    transcoding
+                )
+            )
+
+        ordered.sort(
+            key=lambda item: (
+                item[0],
+                item[1]
+            )
+        )
+
+        for (
+            _quality,
+            _protocol_quality,
+            transcoding
+        ) in ordered:
+
+            transcoding_url = (
+                transcoding.get("url")
+            )
+
+            preset = str(
+                transcoding.get("preset")
+                or ""
+            )
+
+            print(
+                "SoundCloud API: "
+                "попытка получить stream "
+                f"из transcoding: {preset}"
+            )
+
+            try:
+
+                stream_response = (
+                    requests.get(
+                        transcoding_url,
+                        params={
+                            "client_id":
+                                client_id
+                        },
+                        headers=(
+                            SOUNDCLOUD_HEADERS
+                        ),
+                        timeout=(
+                            SOUNDCLOUD_SEARCH_TIMEOUT
+                        )
+                    )
+                )
+
+            except Exception as error:
+
+                print(
+                    "SoundCloud API: "
+                    "ошибка transcoding: "
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
+
+                continue
+
+            print(
+                "SoundCloud API: "
+                "transcoding HTTP-код: "
+                f"{stream_response.status_code}"
+            )
+
+            if (
+                stream_response.status_code
+                != 200
+            ):
+                continue
+
+            try:
+                stream_data = (
+                    stream_response.json()
+                )
+            except Exception:
+                continue
+
+            if not isinstance(
+                stream_data,
+                dict
+            ):
+                continue
+
+            stream_url = (
+                stream_data.get("url")
+            )
+
+            if not isinstance(
+                stream_url,
+                str
+            ):
+                continue
+
+            if not stream_url:
+                continue
+
+            lowered = (
+                stream_url.lower()
+            )
+
+            if "/preview/" in lowered:
+                print(
+                    "SoundCloud API: "
+                    "полученный stream "
+                    "всё ещё preview."
+                )
+
+                continue
+
+            print(
+                "SoundCloud API: "
+                "ПОЛНОЦЕННЫЙ STREAM ПОЛУЧЕН."
+            )
+
+            print(
+                "SoundCloud API: "
+                f"preset: {preset}"
+            )
+
+            return stream_url
+
+    except Exception as error:
+
+        print(
+            "SoundCloud API: "
+            "ошибка получения полного "
+            "stream: "
+            f"{type(error).__name__}: "
+            f"{error}"
+        )
+
+    print(
+        "SoundCloud API: "
+        "полноценный stream не найден."
+    )
+
+    return None
+
 def download_from_soundcloud(
     soundcloud_url,
     filepath,
@@ -2037,15 +2496,17 @@ def download_from_soundcloud(
     exact_match=False
 ):
     """
-    Скачивает трек с SoundCloud через yt-dlp.
+    Скачивает трек с SoundCloud.
 
-    Использует несколько вариантов формата:
-    1. bestaudio/best
-    2. best
-    3. любой доступный аудиоформат
+    Сначала пытается получить полноценный
+    stream напрямую через SoundCloud API.
 
-    Не ограничивается только http_mp3/hls_mp3,
-    поскольку SoundCloud может отдавать AAC/Opus/HLS.
+    Если API не дал полноценный stream,
+    используется обычный yt-dlp.
+
+    Preview stream никогда не принимается
+    как успешный результат: существующая
+    проверка ffprobe остаётся обязательной.
     """
 
     if not soundcloud_url:
@@ -2057,16 +2518,6 @@ def download_from_soundcloud(
     print(
         "Скачивание с SoundCloud..."
     )
-
-    # SAFE SOUNDCLOUD FINAL FILENAME
-    # --------------------------------------------------------
-    # Защита итогового имени файла от:
-    # - переводов строк;
-    # - TAB;
-    # - управляющих символов;
-    # - запрещённых Windows-символов;
-    # - пробелов/точек в конце имени.
-    # --------------------------------------------------------
 
     original_filepath = filepath
 
@@ -2085,29 +2536,24 @@ def download_from_soundcloud(
         .replace("\t", " ")
     )
 
-    # Удаляем управляющие ASCII-символы.
     filepath_name = re.sub(
         r"[\x00-\x1F\x7F]",
         " ",
         filepath_name
     )
 
-    # Удаляем символы, запрещённые Windows.
     filepath_name = re.sub(
         r'[<>:"/\\|?*]',
         "",
         filepath_name
     )
 
-    # Схлопываем повторные пробелы.
     filepath_name = re.sub(
         r"\s+",
         " ",
         filepath_name
     ).strip()
 
-    # Windows не разрешает точку или пробел
-    # в конце имени файла.
     filepath_name = filepath_name.rstrip(
         " ."
     )
@@ -2136,7 +2582,6 @@ def download_from_soundcloud(
             os.path.basename(filepath)
         )
 
-
     output_dir = os.path.dirname(
         os.path.abspath(filepath)
     )
@@ -2156,18 +2601,15 @@ def download_from_soundcloud(
         + ".soundcloud_temp.%(ext)s"
     )
 
-    format_attempts = (
-        "bestaudio/best",
-        "best",
-    )
-
     def cleanup_temp():
 
         directory = os.path.dirname(
             os.path.abspath(filepath)
         )
 
-        if not os.path.isdir(directory):
+        if not os.path.isdir(
+            directory
+        ):
             return
 
         prefix = os.path.basename(
@@ -2175,9 +2617,13 @@ def download_from_soundcloud(
             + ".soundcloud_temp."
         )
 
-        for name in os.listdir(directory):
+        for name in os.listdir(
+            directory
+        ):
 
-            if not name.startswith(prefix):
+            if not name.startswith(
+                prefix
+            ):
                 continue
 
             path = os.path.join(
@@ -2186,8 +2632,12 @@ def download_from_soundcloud(
             )
 
             try:
-                if os.path.isfile(path):
+
+                if os.path.isfile(
+                    path
+                ):
                     os.remove(path)
+
             except Exception:
                 pass
 
@@ -2202,14 +2652,20 @@ def download_from_soundcloud(
             + ".soundcloud_temp."
         )
 
-        if not os.path.isdir(directory):
+        if not os.path.isdir(
+            directory
+        ):
             return None
 
         candidates = []
 
-        for name in os.listdir(directory):
+        for name in os.listdir(
+            directory
+        ):
 
-            if not name.startswith(prefix):
+            if not name.startswith(
+                prefix
+            ):
                 continue
 
             path = os.path.join(
@@ -2217,17 +2673,21 @@ def download_from_soundcloud(
                 name
             )
 
-            if not os.path.isfile(path):
+            if not os.path.isfile(
+                path
+            ):
                 continue
 
             try:
+
                 size = os.path.getsize(
                     path
                 )
+
             except Exception:
                 continue
 
-            if size < 10 * 1024:
+            if size < MIN_FILE_SIZE:
                 continue
 
             candidates.append(
@@ -2238,13 +2698,17 @@ def download_from_soundcloud(
             return None
 
         candidates.sort(
-            key=lambda x: os.path.getsize(x),
+            key=lambda x:
+                os.path.getsize(x),
             reverse=True
         )
 
         return candidates[0]
 
-    def run_ytdlp(format_spec):
+    def run_ytdlp(
+        input_url,
+        format_spec
+    ):
 
         command = [
             YTDLP,
@@ -2256,12 +2720,14 @@ def download_from_soundcloud(
             "--fragment-retries",
             "3",
             "--socket-timeout",
-            str(SOUNDCLOUD_DOWNLOAD_TIMEOUT),
+            str(
+                SOUNDCLOUD_DOWNLOAD_TIMEOUT
+            ),
             "--format",
             format_spec,
             "--output",
             temp_template,
-            soundcloud_url,
+            input_url,
         ]
 
         try:
@@ -2282,7 +2748,8 @@ def download_from_soundcloud(
 
             print(
                 "SoundCloud: "
-                "превышено время ожидания загрузки."
+                "превышено время ожидания "
+                "загрузки."
             )
 
             return False
@@ -2292,7 +2759,8 @@ def download_from_soundcloud(
             print(
                 "SoundCloud: "
                 f"ошибка запуска yt-dlp: "
-                f"{type(error).__name__}: {error}"
+                f"{type(error).__name__}: "
+                f"{error}"
             )
 
             return False
@@ -2316,12 +2784,16 @@ def download_from_soundcloud(
 
         return True
 
-    def convert_to_mp3(source):
+    def convert_to_mp3(
+        source
+    ):
 
         if not source:
             return False
 
-        if not os.path.isfile(source):
+        if not os.path.isfile(
+            source
+        ):
             return False
 
         command = [
@@ -2353,7 +2825,8 @@ def download_from_soundcloud(
             print(
                 "SoundCloud: "
                 f"ошибка конвертации: "
-                f"{type(error).__name__}: {error}"
+                f"{type(error).__name__}: "
+                f"{error}"
             )
 
             return False
@@ -2373,12 +2846,16 @@ def download_from_soundcloud(
 
             return False
 
-        if not os.path.isfile(filepath):
+        if not os.path.isfile(
+            filepath
+        ):
             return False
 
         try:
 
-            if os.path.getsize(filepath) < MIN_FILE_SIZE:
+            if os.path.getsize(
+                filepath
+            ) < MIN_FILE_SIZE:
                 return False
 
         except Exception:
@@ -2403,7 +2880,9 @@ def download_from_soundcloud(
                 "-show_entries",
                 "format=duration",
                 "-of",
-                "default=noprint_wrappers=1:nokey=1",
+                "default="
+                "noprint_wrappers=1:"
+                "nokey=1",
                 filepath,
             ]
 
@@ -2432,16 +2911,6 @@ def download_from_soundcloud(
                 - requested_duration
             )
 
-            # Обычные кандидаты сохраняют строгий
-            # допуск 10 секунд.
-            #
-            # Для кандидата с exact_match=True
-            # разрешаем до EXACT_MATCH_TOLERANCE.
-            #
-            # Это не отключает проверку длительности.
-            # Она по-прежнему работает, но допускает
-            # более длинную версию точно совпавшего трека.
-
             duration_tolerance = (
                 EXACT_MATCH_TOLERANCE
                 if exact_match
@@ -2463,7 +2932,11 @@ def download_from_soundcloud(
 
                 return False
 
-            if exact_match and difference > SOUNDCLOUD_DURATION_TOLERANCE:
+            if (
+                exact_match
+                and difference
+                > SOUNDCLOUD_DURATION_TOLERANCE
+            ):
 
                 print(
                     "SoundCloud: точный кандидат "
@@ -2473,16 +2946,154 @@ def download_from_soundcloud(
                 )
 
         except Exception:
-
             return True
 
         return True
 
     cleanup_temp()
 
-    # --------------------------------------------------------
-    # Попытки загрузки
-    # --------------------------------------------------------
+    # ========================================================
+    # ПОПЫТКА 1:
+    # прямой полноценный stream SoundCloud API
+    # ========================================================
+
+    print(
+        "SoundCloud: попытка получить "
+        "полноценный stream через API..."
+    )
+
+    full_stream_url = (
+        get_soundcloud_full_stream_url(
+            soundcloud_url
+        )
+    )
+
+    if full_stream_url:
+
+        print(
+            "SoundCloud: полноценный stream "
+            "получен через API."
+        )
+
+        print(
+            "SoundCloud: скачивание "
+            "полноценного stream..."
+        )
+
+        # Для прямого HTTP MP3 подходит best.
+        # Для HLS/AAC yt-dlp также сможет
+        # обработать доступный URL.
+        if run_ytdlp(
+            full_stream_url,
+            "best"
+        ):
+
+            temp_file = (
+                find_temp_file()
+            )
+
+            if temp_file:
+
+                extension = (
+                    os.path.splitext(
+                        temp_file
+                    )[1].lower()
+                )
+
+                if extension == ".mp3":
+
+                    try:
+
+                        if os.path.exists(
+                            filepath
+                        ):
+                            os.remove(
+                                filepath
+                            )
+
+                        shutil.move(
+                            temp_file,
+                            filepath
+                        )
+
+                    except Exception:
+                        cleanup_temp()
+
+                else:
+
+                    if not convert_to_mp3(
+                        temp_file
+                    ):
+
+                        cleanup_temp()
+
+                    else:
+
+                        try:
+                            os.remove(
+                                temp_file
+                            )
+                        except Exception:
+                            pass
+
+                if os.path.isfile(
+                    filepath
+                ):
+
+                    if validate_duration():
+
+                        cleanup_temp()
+
+                        print(
+                            "SoundCloud: "
+                            "полноценный stream "
+                            "успешно скачан."
+                        )
+
+                        return True
+
+                    print(
+                        "SoundCloud: "
+                        "полученный stream "
+                        "не прошёл проверку "
+                        "длительности."
+                    )
+
+                    try:
+
+                        os.remove(
+                            filepath
+                        )
+
+                    except Exception:
+                        pass
+
+                    cleanup_temp()
+
+        else:
+
+            cleanup_temp()
+
+    else:
+
+        print(
+            "SoundCloud: полноценный stream "
+            "через API не получен."
+        )
+
+    # ========================================================
+    # ПОПЫТКА 2:
+    # обычный yt-dlp.
+    #
+    # Это сохраняет прежнее поведение
+    # для Gizzaru и остальных рабочих
+    # SoundCloud-треков.
+    # ========================================================
+
+    format_attempts = (
+        "bestaudio/best",
+        "best",
+    )
 
     for format_spec in format_attempts:
 
@@ -2492,32 +3103,36 @@ def download_from_soundcloud(
         )
 
         if not run_ytdlp(
+            soundcloud_url,
             format_spec
         ):
+
             cleanup_temp()
             continue
 
         temp_file = find_temp_file()
 
         if not temp_file:
+
             cleanup_temp()
             continue
 
-        # ----------------------------------------------------
-        # Если yt-dlp уже получил MP3,
-        # просто переносим его.
-        # ----------------------------------------------------
-
-        extension = os.path.splitext(
-            temp_file
-        )[1].lower()
+        extension = (
+            os.path.splitext(
+                temp_file
+            )[1].lower()
+        )
 
         if extension == ".mp3":
 
             try:
 
-                if os.path.exists(filepath):
-                    os.remove(filepath)
+                if os.path.exists(
+                    filepath
+                ):
+                    os.remove(
+                        filepath
+                    )
 
                 shutil.move(
                     temp_file,
@@ -2531,11 +3146,6 @@ def download_from_soundcloud(
 
         else:
 
-            # ------------------------------------------------
-            # AAC / M4A / OPUS / другой поток
-            # конвертируем через FFmpeg.
-            # ------------------------------------------------
-
             if not convert_to_mp3(
                 temp_file
             ):
@@ -2544,11 +3154,15 @@ def download_from_soundcloud(
                 continue
 
             try:
-                os.remove(temp_file)
+                os.remove(
+                    temp_file
+                )
             except Exception:
                 pass
 
-        if not os.path.isfile(filepath):
+        if not os.path.isfile(
+            filepath
+        ):
 
             cleanup_temp()
             continue
@@ -2570,7 +3184,9 @@ def download_from_soundcloud(
         if not validate_duration():
 
             try:
-                os.remove(filepath)
+                os.remove(
+                    filepath
+                )
             except Exception:
                 pass
 
@@ -2580,7 +3196,8 @@ def download_from_soundcloud(
         cleanup_temp()
 
         print(
-            "SoundCloud: загрузка успешно завершена."
+            "SoundCloud: "
+            "загрузка успешно завершена."
         )
 
         return True
