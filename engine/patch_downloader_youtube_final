@@ -1,1 +1,1201 @@
+import ast
+import hashlib
+import os
+import py_compile
+import shutil
+import sys
+import tempfile
+import urllib.request
+from datetime import datetime
+from pathlib import Path
 
+
+# ============================================================
+# CENSURU.NET
+# Восстановление / перенос SoundCloud-модуля
+#
+# Источник:
+# https://github.com/anzimiw/qfu239huj932r
+#
+# ВАЖНО:
+# downloader.py в этом репозитории импортирует
+# sources_soundcloud.py.
+#
+# Патч НЕ изменяет downloader.py, пока не найден
+# полноценный sources_soundcloud.py.
+# ============================================================
+
+
+ENGINE_DIR = Path(
+    os.path.dirname(
+        os.path.abspath(__file__)
+    )
+)
+
+DOWNLOADER = ENGINE_DIR / "downloader.py"
+
+SOUNDCLOUD_MODULE = (
+    ENGINE_DIR / "sources_soundcloud.py"
+)
+
+GITHUB_MODULE_URL = (
+    "https://raw.githubusercontent.com/"
+    "anzimiw/qfu239huj932r/main/"
+    "engine/sources_soundcloud.py"
+)
+
+EXPECTED_FUNCTIONS = (
+    "get_soundcloud_client_id",
+    "normalize_soundcloud_metadata",
+    "evaluate_soundcloud_candidate",
+    "fetch_soundcloud_results",
+    "search_soundcloud",
+    "download_from_soundcloud",
+)
+
+EXPECTED_IMPORT = (
+    "from sources_soundcloud import"
+)
+
+BACKUP_PREFIX = (
+    "downloader.py.backup_sc_import_"
+)
+
+
+# ============================================================
+# Общие функции
+# ============================================================
+
+
+def fail(message):
+    raise RuntimeError(message)
+
+
+def read_text(path):
+    with open(
+        path,
+        "r",
+        encoding="utf-8"
+    ) as f:
+        return f.read()
+
+
+def write_text(path, text):
+    with open(
+        path,
+        "w",
+        encoding="utf-8",
+        newline=""
+    ) as f:
+        f.write(text)
+
+
+def parse(source, label):
+    try:
+        return ast.parse(source)
+    except SyntaxError as e:
+        fail(
+            f"{label} содержит синтаксическую ошибку:\n{e}"
+        )
+
+
+def top_functions(tree):
+    return {
+        node.name: node
+        for node in tree.body
+        if isinstance(
+            node,
+            (
+                ast.FunctionDef,
+                ast.AsyncFunctionDef
+            )
+        )
+    }
+
+
+def top_imports(tree):
+    return [
+        node
+        for node in tree.body
+        if isinstance(
+            node,
+            (
+                ast.Import,
+                ast.ImportFrom
+            )
+        )
+    ]
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+
+    with open(
+        path,
+        "rb"
+    ) as f:
+
+        while True:
+
+            chunk = f.read(
+                1024 * 1024
+            )
+
+            if not chunk:
+                break
+
+            h.update(chunk)
+
+    return h.hexdigest()
+
+
+# ============================================================
+# Проверка текущего downloader.py
+# ============================================================
+
+
+def validate_current_downloader():
+    if not DOWNLOADER.is_file():
+        fail(
+            "Не найден downloader.py:\n"
+            + str(DOWNLOADER)
+        )
+
+    source = read_text(
+        DOWNLOADER
+    )
+
+    tree = parse(
+        source,
+        "текущий downloader.py"
+    )
+
+    funcs = top_functions(
+        tree
+    )
+
+    return source, tree, funcs
+
+
+# ============================================================
+# Поиск локального SoundCloud-модуля
+# ============================================================
+
+
+def validate_soundcloud_module_text(
+    source,
+    label
+):
+    tree = parse(
+        source,
+        label
+    )
+
+    funcs = top_functions(
+        tree
+    )
+
+    missing = [
+        name
+        for name in EXPECTED_FUNCTIONS
+        if name not in funcs
+    ]
+
+    if missing:
+        return False, missing
+
+    return True, []
+
+
+def check_local_module():
+    if not SOUNDCLOUD_MODULE.is_file():
+        return None
+
+    try:
+        source = read_text(
+            SOUNDCLOUD_MODULE
+        )
+
+        valid, missing = (
+            validate_soundcloud_module_text(
+                source,
+                "локальный sources_soundcloud.py"
+            )
+        )
+
+        if valid:
+            return source
+
+    except Exception:
+        pass
+
+    return None
+
+
+# ============================================================
+# Загрузка источника GitHub
+# ============================================================
+
+
+def download_github_module():
+    print()
+    print(
+        "Проверка источника SoundCloud на GitHub..."
+    )
+
+    print(
+        "  URL:"
+    )
+
+    print(
+        f"  {GITHUB_MODULE_URL}"
+    )
+
+    try:
+
+        request = urllib.request.Request(
+            GITHUB_MODULE_URL,
+            headers={
+                "User-Agent":
+                    "Censuru.net-SoundCloud-Patcher/1.0"
+            }
+        )
+
+        with urllib.request.urlopen(
+            request,
+            timeout=20
+        ) as response:
+
+            data = response.read()
+
+        source = data.decode(
+            "utf-8"
+        )
+
+    except Exception as error:
+
+        print(
+            "  GitHub-источник недоступен:"
+        )
+
+        print(
+            f"  {type(error).__name__}: {error}"
+        )
+
+        return None
+
+    if not source.strip():
+        print(
+            "  GitHub вернул пустой файл."
+        )
+        return None
+
+    try:
+
+        valid, missing = (
+            validate_soundcloud_module_text(
+                source,
+                "sources_soundcloud.py из GitHub"
+            )
+        )
+
+    except Exception as error:
+
+        print(
+            "  Полученный файл содержит "
+            "синтаксическую ошибку:"
+        )
+
+        print(
+            f"  {error}"
+        )
+
+        return None
+
+    if not valid:
+
+        print(
+            "  GitHub-файл не является "
+            "полным SoundCloud-модулем."
+        )
+
+        print(
+            "  Отсутствуют функции:"
+        )
+
+        for name in missing:
+            print(
+                f"    - {name}"
+            )
+
+        return None
+
+    print(
+        "  OK: найден полноценный "
+        "sources_soundcloud.py"
+    )
+
+    return source
+
+
+# ============================================================
+# Поиск SoundCloud-кода в локальных файлах
+# ============================================================
+
+
+def find_local_soundcloud_sources():
+    """
+    Ищет полноценный SoundCloud-модуль среди файлов engine.
+
+    Это запасной вариант на случай, если GitHub-файл
+    недоступен, но модуль был сохранён где-то локально.
+    """
+
+    found = []
+
+    patterns = (
+        "sources_soundcloud*.py",
+        "*soundcloud*.py",
+    )
+
+    seen = set()
+
+    for pattern in patterns:
+
+        for path in ENGINE_DIR.glob(pattern):
+
+            if not path.is_file():
+                continue
+
+            resolved = str(
+                path.resolve()
+            )
+
+            if resolved in seen:
+                continue
+
+            seen.add(resolved)
+
+            if path.name == (
+                "patch_move_soundcloud_from_github_v1.py"
+            ):
+                continue
+
+            try:
+
+                source = read_text(
+                    path
+                )
+
+                valid, missing = (
+                    validate_soundcloud_module_text(
+                        source,
+                        str(path)
+                    )
+                )
+
+                if valid:
+                    found.append(
+                        (
+                            path,
+                            source
+                        )
+                    )
+
+            except Exception:
+                continue
+
+    return found
+
+
+# ============================================================
+# Backup
+# ============================================================
+
+
+def create_backup():
+    stamp = datetime.now().strftime(
+        "%Y%m%d_%H%M%S"
+    )
+
+    backup = (
+        ENGINE_DIR
+        / f"{BACKUP_PREFIX}{stamp}.py"
+    )
+
+    shutil.copy2(
+        DOWNLOADER,
+        backup
+    )
+
+    return backup
+
+
+def create_module_backup():
+    if not SOUNDCLOUD_MODULE.is_file():
+        return None
+
+    stamp = datetime.now().strftime(
+        "%Y%m%d_%H%M%S"
+    )
+
+    backup = (
+        ENGINE_DIR
+        / (
+            "sources_soundcloud.py.backup_sc_import_"
+            f"{stamp}"
+        )
+    )
+
+    shutil.copy2(
+        SOUNDCLOUD_MODULE,
+        backup
+    )
+
+    return backup
+
+
+# ============================================================
+# Импорт в downloader.py
+# ============================================================
+
+
+def ensure_soundcloud_import(
+    source
+):
+    """
+    Добавляет правильный top-level import.
+
+    Если импорт уже есть — ничего не меняет.
+
+    Если есть старый импорт SoundCloud —
+    удаляет его и ставит один корректный импорт.
+    """
+
+    tree = parse(
+        source,
+        "downloader.py"
+    )
+
+    lines = source.splitlines(
+        keepends=True
+    )
+
+    import_nodes = []
+
+    for node in tree.body:
+
+        if not isinstance(
+            node,
+            ast.ImportFrom
+        ):
+            continue
+
+        if node.module != (
+            "sources_soundcloud"
+        ):
+            continue
+
+        import_nodes.append(
+            node
+        )
+
+    correct_import = (
+        "\n"
+        "from sources_soundcloud import (\n"
+        "    get_soundcloud_client_id,\n"
+        "    normalize_soundcloud_metadata,\n"
+        "    evaluate_soundcloud_candidate,\n"
+        "    fetch_soundcloud_results,\n"
+        "    search_soundcloud,\n"
+        "    download_from_soundcloud,\n"
+        ")\n"
+    )
+
+    # --------------------------------------------------------
+    # Уже правильный импорт
+    # --------------------------------------------------------
+
+    if len(import_nodes) == 1:
+
+        node = import_nodes[0]
+
+        imported = []
+
+        for alias in node.names:
+            imported.append(
+                alias.name
+            )
+
+        if all(
+            name in imported
+            for name in EXPECTED_FUNCTIONS
+        ):
+
+            return source
+
+    # --------------------------------------------------------
+    # Удаляем существующие top-level
+    # imports sources_soundcloud
+    # --------------------------------------------------------
+
+    for node in sorted(
+        import_nodes,
+        key=lambda n: n.lineno,
+        reverse=True
+    ):
+
+        del lines[
+            node.lineno - 1:
+            node.end_lineno
+        ]
+
+    source = "".join(
+        lines
+    )
+
+    # --------------------------------------------------------
+    # Заново парсим после удаления
+    # --------------------------------------------------------
+
+    tree = parse(
+        source,
+        "downloader.py после очистки импорта"
+    )
+
+    lines = source.splitlines(
+        keepends=True
+    )
+
+    imports = [
+        node
+        for node in tree.body
+        if isinstance(
+            node,
+            (
+                ast.Import,
+                ast.ImportFrom
+            )
+        )
+    ]
+
+    if imports:
+
+        last_import = max(
+            imports,
+            key=lambda n: n.end_lineno
+        )
+
+        lines.insert(
+            last_import.end_lineno,
+            correct_import
+        )
+
+        return "".join(
+            lines
+        )
+
+    return (
+        correct_import.lstrip("\n")
+        + "\n"
+        + source
+    )
+
+
+# ============================================================
+# Проверка результата
+# ============================================================
+
+
+def validate_final_downloader(
+    source
+):
+    tree = parse(
+        source,
+        "изменённый downloader.py"
+    )
+
+    imports = [
+        node
+        for node in tree.body
+        if isinstance(
+            node,
+            ast.ImportFrom
+        )
+        and node.module == (
+            "sources_soundcloud"
+        )
+    ]
+
+    if len(imports) != 1:
+
+        fail(
+            "После патча должен существовать "
+            "ровно один top-level import "
+            "sources_soundcloud."
+        )
+
+    imported = {
+        alias.name
+        for alias in imports[0].names
+    }
+
+    missing = [
+        name
+        for name in EXPECTED_FUNCTIONS
+        if name not in imported
+    ]
+
+    if missing:
+
+        fail(
+            "В import sources_soundcloud "
+            "не хватает функций:\n"
+            + "\n".join(
+                "  - " + name
+                for name in missing
+            )
+        )
+
+    # SoundCloud-функции не должны снова
+    # находиться непосредственно в downloader.py.
+
+    funcs = top_functions(
+        tree
+    )
+
+    forbidden = [
+        name
+        for name in EXPECTED_FUNCTIONS
+        if name in funcs
+    ]
+
+    if forbidden:
+
+        fail(
+            "Следующие SoundCloud-функции "
+            "не должны находиться непосредственно "
+            "в downloader.py:\n"
+            + "\n".join(
+                "  - " + name
+                for name in forbidden
+            )
+        )
+
+
+def validate_final_module():
+    py_compile.compile(
+        str(SOUNDCLOUD_MODULE),
+        doraise=True
+    )
+
+    source = read_text(
+        SOUNDCLOUD_MODULE
+    )
+
+    valid, missing = (
+        validate_soundcloud_module_text(
+            source,
+            "финальный sources_soundcloud.py"
+        )
+    )
+
+    if not valid:
+
+        fail(
+            "Финальный sources_soundcloud.py "
+            "не содержит:\n"
+            + "\n".join(
+                "  - " + name
+                for name in missing
+            )
+        )
+
+
+# ============================================================
+# Главная процедура
+# ============================================================
+
+
+def main():
+
+    print(
+        "=" * 70
+    )
+
+    print(
+        "CENSURU.NET — ВОССТАНОВЛЕНИЕ "
+        "SOUNDCLOUD ИЗ GITHUB"
+    )
+
+    print(
+        "=" * 70
+    )
+
+    # --------------------------------------------------------
+    # 1
+    # --------------------------------------------------------
+
+    print(
+        "\n1/8: проверка downloader.py..."
+    )
+
+    current_source, current_tree, current_funcs = (
+        validate_current_downloader()
+    )
+
+    print(
+        "  OK: синтаксис."
+    )
+
+    print(
+        f"  Найдено top-level функций: "
+        f"{len(current_funcs)}"
+    )
+
+    # --------------------------------------------------------
+    # 2
+    # --------------------------------------------------------
+
+    print(
+        "\n2/8: поиск SoundCloud-модуля..."
+    )
+
+    module_source = (
+        download_github_module()
+    )
+
+    module_origin = (
+        "GitHub"
+        if module_source is not None
+        else None
+    )
+
+    # --------------------------------------------------------
+    # Если GitHub сейчас действительно не содержит
+    # sources_soundcloud.py, пробуем локальный модуль.
+    # --------------------------------------------------------
+
+    if module_source is None:
+
+        local = check_local_module()
+
+        if local is not None:
+
+            module_source = local
+            module_origin = (
+                "локальный sources_soundcloud.py"
+            )
+
+            print(
+                "\n  Найден существующий "
+                "рабочий локальный SoundCloud-модуль."
+            )
+
+    # --------------------------------------------------------
+    # Дополнительный поиск
+    # --------------------------------------------------------
+
+    if module_source is None:
+
+        local_candidates = (
+            find_local_soundcloud_sources()
+        )
+
+        if local_candidates:
+
+            path, module_source = (
+                local_candidates[0]
+            )
+
+            module_origin = (
+                f"локальный файл: {path.name}"
+            )
+
+            print(
+                "\n  Найден SoundCloud-модуль:"
+            )
+
+            print(
+                f"  {path}"
+            )
+
+    # --------------------------------------------------------
+    # Ничего не найдено
+    # --------------------------------------------------------
+
+    if module_source is None:
+
+        fail(
+            "\nНе удалось получить полноценный "
+            "sources_soundcloud.py.\n\n"
+            "GitHub-файл downloader.py импортирует "
+            "sources_soundcloud.py, но сам модуль "
+            "по указанному адресу сейчас отсутствует.\n\n"
+            "Патч специально остановлен ДО изменения "
+            "downloader.py, чтобы не повредить рабочий файл."
+        )
+
+    print(
+        "\n  Источник SoundCloud:"
+    )
+
+    print(
+        f"  {module_origin}"
+    )
+
+    # --------------------------------------------------------
+    # 3
+    # --------------------------------------------------------
+
+    print(
+        "\n3/8: проверка SoundCloud-модуля..."
+    )
+
+    valid, missing = (
+        validate_soundcloud_module_text(
+            module_source,
+            "полученный SoundCloud-модуль"
+        )
+    )
+
+    if not valid:
+
+        fail(
+            "SoundCloud-модуль неполный:\n"
+            + "\n".join(
+                "  - " + name
+                for name in missing
+            )
+        )
+
+    # --------------------------------------------------------
+    # Создаём временный файл и компилируем его
+    # ДО изменения рабочего sources_soundcloud.py.
+    # --------------------------------------------------------
+
+    temp_module = (
+        ENGINE_DIR
+        / (
+            ".sources_soundcloud."
+            "validation_tmp.py"
+        )
+    )
+
+    try:
+
+        write_text(
+            temp_module,
+            module_source
+        )
+
+        py_compile.compile(
+            str(temp_module),
+            doraise=True
+        )
+
+    finally:
+
+        try:
+
+            if temp_module.exists():
+                temp_module.unlink()
+
+        except Exception:
+            pass
+
+    print(
+        "  OK: синтаксис SoundCloud-модуля"
+    )
+
+    # --------------------------------------------------------
+    # 4
+    # --------------------------------------------------------
+
+    print(
+        "\n4/8: создание резервных копий..."
+    )
+
+    downloader_backup = (
+        create_backup()
+    )
+
+    module_backup = (
+        create_module_backup()
+    )
+
+    print(
+        "  Backup downloader.py:"
+    )
+
+    print(
+        f"  {downloader_backup}"
+    )
+
+    if module_backup:
+
+        print(
+            "  Backup sources_soundcloud.py:"
+        )
+
+        print(
+            f"  {module_backup}"
+        )
+
+    # --------------------------------------------------------
+    # 5
+    # --------------------------------------------------------
+
+    print(
+        "\n5/8: установка "
+        "sources_soundcloud.py..."
+    )
+
+    write_text(
+        SOUNDCLOUD_MODULE,
+        module_source
+    )
+
+    py_compile.compile(
+        str(SOUNDCLOUD_MODULE),
+        doraise=True
+    )
+
+    print(
+        "  OK"
+    )
+
+    # --------------------------------------------------------
+    # 6
+    # --------------------------------------------------------
+
+    print(
+        "\n6/8: проверка/исправление "
+        "импорта в downloader.py..."
+    )
+
+    try:
+
+        new_downloader = (
+            ensure_soundcloud_import(
+                current_source
+            )
+        )
+
+        write_text(
+            DOWNLOADER,
+            new_downloader
+        )
+
+        print(
+            "  OK: top-level import"
+        )
+
+    except Exception:
+
+        print(
+            "  Ошибка. Выполняю откат..."
+        )
+
+        shutil.copy2(
+            downloader_backup,
+            DOWNLOADER
+        )
+
+        if module_backup:
+
+            shutil.copy2(
+                module_backup,
+                SOUNDCLOUD_MODULE
+            )
+
+        else:
+
+            try:
+
+                SOUNDCLOUD_MODULE.unlink()
+
+            except FileNotFoundError:
+                pass
+
+        raise
+
+    # --------------------------------------------------------
+    # 7
+    # --------------------------------------------------------
+
+    print(
+        "\n7/8: проверка downloader.py..."
+    )
+
+    try:
+
+        final_downloader = read_text(
+            DOWNLOADER
+        )
+
+        py_compile.compile(
+            str(DOWNLOADER),
+            doraise=True
+        )
+
+        validate_final_downloader(
+            final_downloader
+        )
+
+        print(
+            "  OK: downloader.py"
+        )
+
+        validate_final_module()
+
+        print(
+            "  OK: sources_soundcloud.py"
+        )
+
+    except Exception:
+
+        print(
+            "\n  Ошибка проверки."
+        )
+
+        print(
+            "  Выполняю полный откат..."
+        )
+
+        shutil.copy2(
+            downloader_backup,
+            DOWNLOADER
+        )
+
+        if module_backup:
+
+            shutil.copy2(
+                module_backup,
+                SOUNDCLOUD_MODULE
+            )
+
+        else:
+
+            try:
+
+                SOUNDCLOUD_MODULE.unlink()
+
+            except FileNotFoundError:
+                pass
+
+        print(
+            "  Backup восстановлен."
+        )
+
+        raise
+
+    # --------------------------------------------------------
+    # 8
+    # --------------------------------------------------------
+
+    print(
+        "\n8/8: финальная проверка..."
+    )
+
+    py_compile.compile(
+        str(DOWNLOADER),
+        doraise=True
+    )
+
+    py_compile.compile(
+        str(SOUNDCLOUD_MODULE),
+        doraise=True
+    )
+
+    final_downloader = read_text(
+        DOWNLOADER
+    )
+
+    validate_final_downloader(
+        final_downloader
+    )
+
+    validate_final_module()
+
+    print(
+        "  OK"
+    )
+
+    print(
+        "\n" + "=" * 70
+    )
+
+    print(
+        "SOUNDCLOUD-ПЕРЕНОС УСПЕШНО ЗАВЕРШЁН"
+    )
+
+    print(
+        "=" * 70
+    )
+
+    print(
+        "\nУстановлен:"
+    )
+
+    print(
+        "  " + str(SOUNDCLOUD_MODULE)
+    )
+
+    print(
+        "\nИсточник:"
+    )
+
+    print(
+        f"  {module_origin}"
+    )
+
+    print(
+        "\nBackup downloader.py:"
+    )
+
+    print(
+        f"  {downloader_backup}"
+    )
+
+    if module_backup:
+
+        print(
+            "\nBackup старого sources_soundcloud.py:"
+        )
+
+        print(
+            f"  {module_backup}"
+        )
+
+
+# ============================================================
+# Запуск
+# ============================================================
+
+
+if __name__ == "__main__":
+
+    try:
+
+        main()
+
+    except Exception as error:
+
+        print(
+            "\n" + "=" * 70
+        )
+
+        print(
+            "ОШИБКА ПРИ ВОССТАНОВЛЕНИИ SOUNDCLOUD"
+        )
+
+        print(
+            "=" * 70
+        )
+
+        print(
+            f"{type(error).__name__}: {error}"
+        )
+
+        sys.exit(1)
