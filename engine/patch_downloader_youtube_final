@@ -1,1 +1,1008 @@
+import ast
+import os
+import py_compile
+import shutil
+import sys
+from datetime import datetime
 
+
+ENGINE_DIR = os.path.dirname(
+    os.path.abspath(__file__)
+)
+
+DOWNLOADER = os.path.join(
+    ENGINE_DIR,
+    "downloader.py"
+)
+
+SOUNDCLOUD_MODULE = os.path.join(
+    ENGINE_DIR,
+    "sources_soundcloud.py"
+)
+
+MAX_SOUNDCLOUD_CANDIDATES = 5
+
+
+def fail(message):
+    raise RuntimeError(message)
+
+
+def read_text(path):
+    with open(
+        path,
+        "r",
+        encoding="utf-8"
+    ) as f:
+        return f.read()
+
+
+def write_text(path, text):
+    with open(
+        path,
+        "w",
+        encoding="utf-8",
+        newline=""
+    ) as f:
+        f.write(text)
+
+
+def parse(source, label):
+    try:
+        return ast.parse(source)
+    except SyntaxError as error:
+        fail(
+            f"{label} содержит синтаксическую ошибку:\n"
+            f"{error}"
+        )
+
+
+def top_functions(tree):
+    return {
+        node.name: node
+        for node in tree.body
+        if isinstance(
+            node,
+            (
+                ast.FunctionDef,
+                ast.AsyncFunctionDef
+            )
+        )
+    }
+
+
+def make_backup(path):
+    stamp = datetime.now().strftime(
+        "%Y%m%d_%H%M%S"
+    )
+
+    backup = os.path.join(
+        ENGINE_DIR,
+        os.path.basename(path)
+        + ".backup_next_candidates_"
+        + stamp
+    )
+
+    shutil.copy2(
+        path,
+        backup
+    )
+
+    return backup
+
+
+def patch_sources_soundcloud(source):
+
+    if '"alternatives":' in source:
+        fail(
+            "sources_soundcloud.py уже содержит "
+            "alternatives. Патч уже был применён."
+        )
+
+    tree = parse(
+        source,
+        "sources_soundcloud.py"
+    )
+
+    funcs = top_functions(tree)
+
+    if "search_soundcloud" not in funcs:
+        fail(
+            "Функция search_soundcloud() "
+            "не найдена."
+        )
+
+    old = '''        best = candidates[0]
+
+        candidate = best[
+            "candidate"
+        ]
+
+        candidate_title = str(
+            candidate.get("title")
+            or ""
+        ).strip()
+
+        user = candidate.get(
+            "user"
+        )
+
+        if isinstance(
+            user,
+            dict
+        ):
+            candidate_artist = str(
+                user.get("username")
+                or ""
+            ).strip()
+
+        else:
+            candidate_artist = ""
+
+        candidate_url = (
+            candidate.get(
+                "permalink_url"
+            )
+            or candidate.get(
+                "uri"
+            )
+            or ""
+        )
+
+        if not candidate_url:
+
+            print(
+                "SoundCloud: у кандидата "
+                "отсутствует URL."
+            )
+            continue
+
+        print()
+        print(
+            "SoundCloud: КАНДИДАТ НАЙДЕН."
+        )
+
+        print(
+            "SoundCloud: этап: "
+            f"{stage_number}/4"
+        )
+
+        print(
+            "SoundCloud: запрос: "
+            f"{query}"
+        )
+
+        print(
+            "SoundCloud: score: "
+            f"{best['score']:.1f}"
+        )
+
+        print(
+            "SoundCloud: название кандидата: "
+            f"{candidate_title}"
+        )
+
+        print(
+            "SoundCloud: исполнитель кандидата: "
+            f"{candidate_artist}"
+        )
+
+        print(
+            "SoundCloud: URL: "
+            f"{candidate_url}"
+        )
+
+        print(
+            "SoundCloud: используем результат "
+            f"этапа {stage_number}."
+        )
+        return {
+            "url": candidate_url,
+            "title": candidate_title,
+            "artist": candidate_artist,
+            "duration": candidate.get(
+                "duration"
+            ),
+            "score": best["score"],
+            "candidate": candidate,
+            "search_stage": stage_number,
+            "search_query": query,
+            # Признак очень точного совпадения.
+            #
+            # Для exact_match НЕ используются конкретные
+            # имена исполнителей или названия треков.
+            #
+            # Проверяем:
+            #   1. высокий score;
+            #   2. точное совпадение названия;
+            #   3. совпадение исполнителя.
+            "exact_match": (
+                best["score"] >= 900
+                and (
+                    best.get("title_ratio", 0)
+                    >= 1.0
+                )
+                and (
+                    best.get("artist_ratio", 0)
+                    >= 1.0
+                )
+            ),
+        }
+'''
+
+    new = '''        # ----------------------------------------------------
+        # TOP-КАНДИДАТЫ
+        #
+        # Существующий scoring НЕ изменяется.
+        #
+        # candidates уже:
+        #   1. прошли evaluate_soundcloud_candidate();
+        #   2. очищены от дублей;
+        #   3. отсортированы по score.
+        #
+        # Поэтому candidates[0] остаётся TOP 1,
+        # candidates[1] — TOP 2 и т.д.
+        #
+        # Мы просто передаём downloader несколько лучших
+        # кандидатов, чтобы он мог попробовать следующий,
+        # если фактическая загрузка предыдущего окажется
+        # неправильной длительности.
+        # ----------------------------------------------------
+
+        top_candidates = candidates[
+            :MAX_SOUNDCLOUD_CANDIDATES
+        ]
+
+        if not top_candidates:
+            continue
+
+        best = top_candidates[0]
+
+        def make_result(item):
+
+            item_candidate = item[
+                "candidate"
+            ]
+
+            item_title = str(
+                item_candidate.get("title")
+                or ""
+            ).strip()
+
+            item_user = item_candidate.get(
+                "user"
+            )
+
+            if isinstance(
+                item_user,
+                dict
+            ):
+                item_artist = str(
+                    item_user.get("username")
+                    or ""
+                ).strip()
+            else:
+                item_artist = ""
+
+            item_url = (
+                item_candidate.get(
+                    "permalink_url"
+                )
+                or item_candidate.get(
+                    "uri"
+                )
+                or ""
+            )
+
+            return {
+                "url": item_url,
+                "title": item_title,
+                "artist": item_artist,
+                "duration": item_candidate.get(
+                    "duration"
+                ),
+                "score": item["score"],
+                "candidate": item_candidate,
+                "search_stage": stage_number,
+                "search_query": query,
+                "exact_match": (
+                    item["score"] >= 900
+                    and (
+                        item.get(
+                            "title_ratio",
+                            0
+                        ) >= 1.0
+                    )
+                    and (
+                        item.get(
+                            "artist_ratio",
+                            0
+                        ) >= 1.0
+                    )
+                ),
+            }
+
+        result = make_result(best)
+
+        if not result["url"]:
+
+            print(
+                "SoundCloud: у TOP 1 "
+                "отсутствует URL."
+            )
+
+            # Если TOP 1 не имеет URL, всё равно
+            # позволяем downloader проверить следующие.
+            alternatives = []
+
+            for item in top_candidates[1:]:
+
+                alternative = make_result(
+                    item
+                )
+
+                if alternative["url"]:
+                    alternatives.append(
+                        alternative
+                    )
+
+            result["alternatives"] = alternatives
+
+        else:
+
+            alternatives = []
+
+            for item in top_candidates[1:]:
+
+                alternative = make_result(
+                    item
+                )
+
+                if not alternative["url"]:
+                    continue
+
+                alternatives.append(
+                    alternative
+                )
+
+            result["alternatives"] = alternatives
+
+        candidate = best[
+            "candidate"
+        ]
+
+        candidate_title = str(
+            candidate.get("title")
+            or ""
+        ).strip()
+
+        user = candidate.get(
+            "user"
+        )
+
+        if isinstance(
+            user,
+            dict
+        ):
+            candidate_artist = str(
+                user.get("username")
+                or ""
+            ).strip()
+        else:
+            candidate_artist = ""
+
+        candidate_url = (
+            candidate.get(
+                "permalink_url"
+            )
+            or candidate.get(
+                "uri"
+            )
+            or ""
+        )
+
+        if not candidate_url:
+
+            print(
+                "SoundCloud: у TOP 1 "
+                "отсутствует URL."
+            )
+
+            if not result["alternatives"]:
+                continue
+
+            # Не меняем порядок кандидатов.
+            # downloader получит TOP 2 как первый
+            # фактически пригодный вариант.
+            print(
+                "SoundCloud: TOP 1 без URL, "
+                "передаём следующие кандидаты."
+            )
+
+        print()
+        print(
+            "SoundCloud: КАНДИДАТ НАЙДЕН."
+        )
+
+        print(
+            "SoundCloud: этап: "
+            f"{stage_number}/4"
+        )
+
+        print(
+            "SoundCloud: запрос: "
+            f"{query}"
+        )
+
+        print(
+            "SoundCloud: score: "
+            f"{best['score']:.1f}"
+        )
+
+        print(
+            "SoundCloud: название кандидата: "
+            f"{candidate_title}"
+        )
+
+        print(
+            "SoundCloud: исполнитель кандидата: "
+            f"{candidate_artist}"
+        )
+
+        print(
+            "SoundCloud: URL: "
+            f"{candidate_url}"
+        )
+
+        print(
+            "SoundCloud: кандидатов "
+            "для последовательной проверки: "
+            f"{1 + len(result['alternatives'])}"
+        )
+
+        print(
+            "SoundCloud: используем результат "
+            f"этапа {stage_number}."
+        )
+
+        return result
+'''
+
+    if old not in source:
+        fail(
+            "Не найден точный блок выбора TOP 1 "
+            "в search_soundcloud().\n"
+            "Файл на ПК, вероятно, отличается "
+            "от файла на GitHub."
+        )
+
+    return source.replace(
+        old,
+        new,
+        1
+    )
+
+
+def patch_downloader(source):
+
+    tree = parse(
+        source,
+        "downloader.py"
+    )
+
+    funcs = top_functions(tree)
+
+    if "find_and_download_track" not in funcs:
+        fail(
+            "Функция find_and_download_track() "
+            "не найдена."
+        )
+
+    if "soundcloud_candidates" in source:
+        fail(
+            "downloader.py уже содержит "
+            "soundcloud_candidates. "
+            "Патч уже был применён."
+        )
+
+    old = '''    if result and download_from_soundcloud(
+        result["url"],
+        filepath,
+        duration,
+        result.get(
+            "exact_match",
+            False
+        )
+    ):
+        return filepath
+'''
+
+    new = '''    if result:
+
+        # ----------------------------------------------------
+        # SEQUENTIAL SOUNDCLOUD CANDIDATE CHECK
+        #
+        # search_soundcloud() сохраняет существующий scoring
+        # и порядок кандидатов.
+        #
+        # Здесь мы только последовательно проверяем:
+        #
+        # TOP 1 -> TOP 2 -> TOP 3 -> TOP 4 -> TOP 5
+        #
+        # Если download_from_soundcloud() возвращает False
+        # из-за неправильной фактической длительности,
+        # текущий кандидат отбрасывается и пробуется следующий.
+        #
+        # Это НЕ изменяет критерии поиска SoundCloud.
+        # ----------------------------------------------------
+
+        soundcloud_candidates = [
+            result
+        ]
+
+        alternatives = result.get(
+            "alternatives",
+            []
+        )
+
+        if isinstance(
+            alternatives,
+            list
+        ):
+            soundcloud_candidates.extend(
+                alternatives
+            )
+
+        soundcloud_candidates = (
+            soundcloud_candidates[
+                :5
+            ]
+        )
+
+        print(
+            "SoundCloud: кандидатов "
+            "для последовательной проверки: "
+            f"{len(soundcloud_candidates)}"
+        )
+
+        for index, candidate_result in enumerate(
+            soundcloud_candidates,
+            1
+        ):
+
+            print()
+            print(
+                "SoundCloud: проверка кандидата "
+                f"{index}/"
+                f"{len(soundcloud_candidates)}"
+            )
+
+            print(
+                "SoundCloud: score: "
+                f"{candidate_result.get('score', 0):.1f}"
+            )
+
+            print(
+                "SoundCloud: название кандидата: "
+                f"{candidate_result.get('title', '')}"
+            )
+
+            print(
+                "SoundCloud: исполнитель кандидата: "
+                f"{candidate_result.get('artist', '')}"
+            )
+
+            candidate_url = candidate_result.get(
+                "url"
+            )
+
+            if not candidate_url:
+
+                print(
+                    "SoundCloud: у кандидата "
+                    "нет URL. Пропуск."
+                )
+
+                continue
+
+            if download_from_soundcloud(
+                candidate_url,
+                filepath,
+                duration,
+                candidate_result.get(
+                    "exact_match",
+                    False
+                )
+            ):
+
+                print(
+                    "SoundCloud: кандидат "
+                    f"{index} успешно скачан."
+                )
+
+                return filepath
+
+            print(
+                "SoundCloud: кандидат "
+                f"{index} не подошёл."
+            )
+
+        print(
+            "SoundCloud: все кандидаты "
+            "не подошли."
+        )
+
+        print(
+            "SoundCloud: переход к MP3Party."
+        )
+'''
+
+    if old not in source:
+        fail(
+            "Не найден текущий блок SoundCloud "
+            "в find_and_download_track()."
+        )
+
+    return source.replace(
+        old,
+        new,
+        1
+    )
+
+
+def validate_sources(source):
+
+    tree = parse(
+        source,
+        "sources_soundcloud.py"
+    )
+
+    funcs = top_functions(tree)
+
+    if "search_soundcloud" not in funcs:
+        fail(
+            "search_soundcloud() отсутствует."
+        )
+
+    if '"alternatives"' not in source:
+        fail(
+            "После патча alternatives "
+            "не найден."
+        )
+
+
+def validate_downloader(source):
+
+    tree = parse(
+        source,
+        "downloader.py"
+    )
+
+    funcs = top_functions(tree)
+
+    if "find_and_download_track" not in funcs:
+        fail(
+            "find_and_download_track() "
+            "отсутствует."
+        )
+
+    if "soundcloud_candidates" not in source:
+        fail(
+            "Блок soundcloud_candidates "
+            "не найден."
+        )
+
+
+def main():
+
+    print("=" * 70)
+    print(
+        "CENSURU.NET — SOUNDCLOUD "
+        "SEQUENTIAL CANDIDATES"
+    )
+    print("=" * 70)
+
+    if not os.path.isfile(
+        SOUNDCLOUD_MODULE
+    ):
+        fail(
+            "Не найден sources_soundcloud.py:\n"
+            + SOUNDCLOUD_MODULE
+        )
+
+    if not os.path.isfile(
+        DOWNLOADER
+    ):
+        fail(
+            "Не найден downloader.py:\n"
+            + DOWNLOADER
+        )
+
+    print(
+        "\n1/8: проверка текущих файлов..."
+    )
+
+    sources_original = read_text(
+        SOUNDCLOUD_MODULE
+    )
+
+    downloader_original = read_text(
+        DOWNLOADER
+    )
+
+    parse(
+        sources_original,
+        "sources_soundcloud.py"
+    )
+
+    parse(
+        downloader_original,
+        "downloader.py"
+    )
+
+    print(
+        "  OK: синтаксис."
+    )
+
+    print(
+        "\n2/8: проверка структуры..."
+    )
+
+    tree_sc = parse(
+        sources_original,
+        "sources_soundcloud.py"
+    )
+
+    tree_downloader = parse(
+        downloader_original,
+        "downloader.py"
+    )
+
+    if "search_soundcloud" not in top_functions(
+        tree_sc
+    ):
+        fail(
+            "search_soundcloud() не найдена."
+        )
+
+    if "find_and_download_track" not in top_functions(
+        tree_downloader
+    ):
+        fail(
+            "find_and_download_track() не найдена."
+        )
+
+    if '"alternatives"' in sources_original:
+        fail(
+            "В sources_soundcloud.py уже есть "
+            "alternatives. Не продолжаю, чтобы "
+            "не применить патч повторно."
+        )
+
+    if "soundcloud_candidates" in downloader_original:
+        fail(
+            "В downloader.py уже есть "
+            "soundcloud_candidates. Не продолжаю, "
+            "чтобы не применить патч повторно."
+        )
+
+    print(
+        "  OK: исходные версии подходят."
+    )
+
+    print(
+        "\n3/8: создание резервных копий..."
+    )
+
+    backup_sc = make_backup(
+        SOUNDCLOUD_MODULE
+    )
+
+    backup_downloader = make_backup(
+        DOWNLOADER
+    )
+
+    print(
+        "  Backup sources_soundcloud.py:"
+    )
+    print(
+        "  " + backup_sc
+    )
+
+    print(
+        "  Backup downloader.py:"
+    )
+    print(
+        "  " + backup_downloader
+    )
+
+    try:
+
+        print(
+            "\n4/8: изменение "
+            "sources_soundcloud.py..."
+        )
+
+        sources_patched = (
+            patch_sources_soundcloud(
+                sources_original
+            )
+        )
+
+        write_text(
+            SOUNDCLOUD_MODULE,
+            sources_patched
+        )
+
+        print(
+            "  OK."
+        )
+
+        print(
+            "\n5/8: компиляция "
+            "sources_soundcloud.py..."
+        )
+
+        py_compile.compile(
+            SOUNDCLOUD_MODULE,
+            doraise=True
+        )
+
+        validate_sources(
+            sources_patched
+        )
+
+        print(
+            "  OK."
+        )
+
+        print(
+            "\n6/8: изменение downloader.py..."
+        )
+
+        downloader_patched = (
+            patch_downloader(
+                downloader_original
+            )
+        )
+
+        write_text(
+            DOWNLOADER,
+            downloader_patched
+        )
+
+        print(
+            "  OK."
+        )
+
+        print(
+            "\n7/8: компиляция downloader.py..."
+        )
+
+        py_compile.compile(
+            DOWNLOADER,
+            doraise=True
+        )
+
+        validate_downloader(
+            downloader_patched
+        )
+
+        print(
+            "  OK."
+        )
+
+        print(
+            "\n8/8: финальная проверка..."
+        )
+
+        py_compile.compile(
+            SOUNDCLOUD_MODULE,
+            doraise=True
+        )
+
+        py_compile.compile(
+            DOWNLOADER,
+            doraise=True
+        )
+
+        print(
+            "  OK: оба файла успешно "
+            "компилируются."
+        )
+
+    except Exception:
+
+        print(
+            "\nОШИБКА: выполняю полный откат..."
+        )
+
+        shutil.copy2(
+            backup_sc,
+            SOUNDCLOUD_MODULE
+        )
+
+        shutil.copy2(
+            backup_downloader,
+            DOWNLOADER
+        )
+
+        print(
+            "  sources_soundcloud.py "
+            "восстановлен."
+        )
+
+        print(
+            "  downloader.py "
+            "восстановлен."
+        )
+
+        raise
+
+    print()
+    print("=" * 70)
+    print(
+        "ПАТЧ УСПЕШНО ПРИМЕНЁН"
+    )
+    print("=" * 70)
+
+    print()
+    print(
+        "SoundCloud теперь может "
+        "последовательно проверить до "
+        "5 лучших кандидатов."
+    )
+
+    print()
+    print(
+        "ВАЖНО:"
+    )
+    print(
+        "Существующий scoring "
+        "не изменён."
+    )
+
+    print(
+        "evaluate_soundcloud_candidate() "
+        "не изменён."
+    )
+
+    print(
+        "Каскад поиска 1/4 -> 4/4 "
+        "не изменён."
+    )
+
+    print()
+    print(
+        "Backup sources_soundcloud.py:"
+    )
+    print(
+        backup_sc
+    )
+
+    print(
+        "Backup downloader.py:"
+    )
+    print(
+        backup_downloader
+    )
+
+
+if __name__ == "__main__":
+
+    try:
+        main()
+
+    except Exception as error:
+
+        print()
+        print("=" * 70)
+        print(
+            "ОШИБКА ПРИ ИЗМЕНЕНИИ SOUNDCLOUD"
+        )
+        print("=" * 70)
+        print(
+            f"{type(error).__name__}: "
+            f"{error}"
+        )
+
+        sys.exit(1)
