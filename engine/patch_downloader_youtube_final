@@ -1,1 +1,1244 @@
+import os
+import re
+import ast
+import shutil
+from datetime import datetime
 
+
+ENGINE_FOLDER = os.path.dirname(
+    os.path.abspath(__file__)
+)
+
+DOWNLOADER = os.path.join(
+    ENGINE_FOLDER,
+    "downloader.py"
+)
+
+
+def backup_file(path):
+    timestamp = datetime.now().strftime(
+        "%Y%m%d_%H%M%S"
+    )
+
+    backup = (
+        path
+        + ".backup_"
+        + timestamp
+    )
+
+    shutil.copy2(
+        path,
+        backup
+    )
+
+    return backup
+
+
+def replace_function(
+    text,
+    function_name,
+    new_function
+):
+    pattern = re.compile(
+        r"(?ms)^def "
+        + re.escape(function_name)
+        + r"\s*\(.*?"
+        r"(?=^def |\Z)"
+    )
+
+    match = pattern.search(text)
+
+    if not match:
+        raise RuntimeError(
+            "Не найдена функция: "
+            + function_name
+        )
+
+    return (
+        text[:match.start()]
+        + new_function.rstrip()
+        + "\n"
+        + text[match.end():]
+    )
+
+
+def replace_source_url_block(text):
+    old = '''    source_url = (
+        url
+        if source == "youtube"
+        else None
+    )
+'''
+
+    new = '''    # YOUTUBE FALLBACK SOURCE
+    #
+    # YouTube:
+    #   - если age restriction НЕ обнаружена,
+    #     разрешаем скачать исходный URL;
+    #   - если age restriction обнаружена,
+    #     прямой yt-dlp fallback запрещён.
+    #
+    # Yandex:
+    #   - прямой URL Яндекс Музыки здесь не используется;
+    #   - после остальных источников выполняется
+    #     отдельный поиск подходящего YouTube-кандидата.
+
+    source_url = (
+        url
+        if (
+            source == "youtube"
+            and not info.get(
+                "youtube_age_restricted",
+                False
+            )
+        )
+        else None
+    )
+'''
+
+    if old not in text:
+        raise RuntimeError(
+            "Не найден текущий блок source_url."
+        )
+
+    return text.replace(
+        old,
+        new,
+        1
+    )
+
+
+def replace_find_and_download(text):
+    start_marker = "def find_and_download_track("
+    end_marker = "# SINGLE TRACK"
+
+    start = text.find(
+        start_marker
+    )
+
+    if start < 0:
+        raise RuntimeError(
+            "Не найдена функция "
+            "find_and_download_track()."
+        )
+
+    end = text.find(
+        end_marker,
+        start
+    )
+
+    if end < 0:
+        raise RuntimeError(
+            "Не найден конец "
+            "find_and_download_track()."
+        )
+
+    new_function = r'''def find_and_download_track(
+    artist,
+    title,
+    duration,
+    output_folder,
+    source_url,
+    source,
+    youtube_age_restricted=False
+):
+    print()
+    print("=" * 60)
+    print("ПОИСК АУДИОФАЙЛА")
+    print("=" * 60)
+
+    filename = (
+        f"{safe_filename(artist)} - "
+        f"{safe_filename(title)}.mp3"
+    )
+
+    filepath = os.path.join(
+        output_folder,
+        filename
+    )
+
+    # 1. SoundCloud
+
+    status(
+        "Проверка SoundCloud..."
+    )
+
+    result = search_soundcloud(
+        artist,
+        title,
+        duration
+    )
+
+    if result:
+        soundcloud_candidates = [
+            result
+        ]
+
+        alternatives = result.get(
+            "alternatives",
+            []
+        )
+
+        if isinstance(
+            alternatives,
+            list
+        ):
+            soundcloud_candidates.extend(
+                alternatives
+            )
+
+        soundcloud_candidates = (
+            soundcloud_candidates[:5]
+        )
+
+        print(
+            "SoundCloud: кандидатов "
+            "для проверки: "
+            f"{len(soundcloud_candidates)}"
+        )
+
+        for candidate_index, candidate_result in enumerate(
+            soundcloud_candidates,
+            1
+        ):
+            print()
+            print(
+                "SoundCloud: проверка кандидата "
+                f"{candidate_index}/"
+                f"{len(soundcloud_candidates)}"
+            )
+
+            print(
+                "SoundCloud: score: "
+                f"{candidate_result.get('score', 0):.1f}"
+            )
+
+            print(
+                "SoundCloud: название кандидата: "
+                f"{candidate_result.get('title', '')}"
+            )
+
+            print(
+                "SoundCloud: исполнитель кандидата: "
+                f"{candidate_result.get('artist', '')}"
+            )
+
+            candidate_url = (
+                candidate_result.get("url")
+            )
+
+            if not candidate_url:
+                print(
+                    "SoundCloud: у кандидата "
+                    "отсутствует URL. Пропуск."
+                )
+                continue
+
+            if download_from_soundcloud(
+                candidate_url,
+                filepath,
+                duration,
+                candidate_result.get(
+                    "exact_match",
+                    False
+                )
+            ):
+                print(
+                    "SoundCloud: кандидат "
+                    f"{candidate_index} подходит."
+                )
+                return filepath
+
+            print(
+                "SoundCloud: кандидат "
+                f"{candidate_index} не подошёл."
+            )
+
+        print(
+            "SoundCloud: все кандидаты "
+            "не подошли."
+        )
+
+    # 2. MP3Party
+
+    status(
+        "Проверка MP3Party..."
+    )
+
+    result = search_mp3party(
+        artist,
+        title,
+        duration
+    )
+
+    if result and download_file(
+        result["url"],
+        filepath,
+        result["referer"],
+        MP3PARTY_RETRIES
+    ):
+        return filepath
+
+    # 3. MP3TM
+
+    status(
+        "Проверка MP3TM..."
+    )
+
+    result = search_mp3tm(
+        artist,
+        title,
+        duration
+    )
+
+    if result and download_file(
+        result["url"],
+        filepath,
+        result["referer"],
+        2
+    ):
+        return filepath
+
+    # 4. AudioStart
+
+    status(
+        "Проверка AudioStart..."
+    )
+
+    result = search_audiostart(
+        artist,
+        title,
+        duration
+    )
+
+    if result and download_file(
+        result["url"],
+        filepath,
+        result["referer"],
+        2
+    ):
+        return filepath
+
+    # 5. YOUTUBE / YT-DLP FALLBACK
+
+    print()
+    print(
+        "YouTube fallback: "
+        "проверка финального этапа..."
+    )
+
+    print(
+        f"YouTube fallback: source = "
+        f"{source!r}"
+    )
+
+    print(
+        f"YouTube fallback: "
+        f"age_restricted = "
+        f"{youtube_age_restricted!r}"
+    )
+
+    # ------------------------------------------------------------
+    # ВАРИАНТ A:
+    # Входная ссылка была YouTube.
+    #
+    # Если YouTube ранее запросил подтверждение возраста,
+    # исходную ссылку НЕ скачиваем.
+    # ------------------------------------------------------------
+
+    if source == "youtube":
+
+        if youtube_age_restricted:
+            print(
+                "YouTube fallback: "
+                "прямое скачивание запрещено — "
+                "YouTube запросил подтверждение возраста."
+            )
+
+            print(
+                "YouTube fallback: "
+                "переход к завершению без yt-dlp."
+            )
+
+        elif source_url:
+
+            print(
+                "YouTube fallback: "
+                "возрастное ограничение не обнаружено."
+            )
+
+            print(
+                "YouTube fallback: "
+                "скачивание исходной YouTube-ссылки "
+                "через yt-dlp..."
+            )
+
+            if download_with_ytdlp(
+                source_url,
+                filepath
+            ):
+                return filepath
+
+            print(
+                "YouTube fallback: "
+                "yt-dlp не смог скачать "
+                "исходный YouTube URL."
+            )
+
+    # ------------------------------------------------------------
+    # ВАРИАНТ B:
+    # Входная ссылка была Яндекс Музыка.
+    #
+    # Прямое скачивание с Яндекса НЕ используем.
+    # Вместо этого ищем подходящий YouTube-кандидат.
+    # ------------------------------------------------------------
+
+    elif source == "yandex":
+
+        print(
+            "YouTube fallback: "
+            "входной источник — Яндекс Музыка."
+        )
+
+        print(
+            "YouTube fallback: "
+            "поиск подходящего трека на YouTube..."
+        )
+
+        search_query = (
+            f"ytsearch5:{artist} {title}"
+        )
+
+        temp_template = (
+            os.path.splitext(filepath)[0]
+            + ".youtube-search.tmp.%(ext)s"
+        )
+
+        info_command = [
+            YTDLP,
+            "--dump-single-json",
+            "--flat-playlist",
+            "--no-download",
+            "--quiet",
+            "--no-warnings",
+            search_query
+        ]
+
+        try:
+            result = subprocess.run(
+                info_command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=90
+            )
+
+        except subprocess.TimeoutExpired:
+            print(
+                "YouTube fallback: "
+                "поиск превысил лимит времени."
+            )
+
+            result = None
+
+        except Exception as e:
+            print(
+                "YouTube fallback: "
+                f"ошибка поиска: {e}"
+            )
+
+            result = None
+
+        youtube_candidates = []
+
+        if result and result.returncode == 0:
+            stdout = (
+                result.stdout
+                or ""
+            ).strip()
+
+            if stdout:
+                for line in stdout.splitlines():
+                    line = line.strip()
+
+                    if not line:
+                        continue
+
+                    try:
+                        item = json.loads(
+                            line
+                        )
+                    except Exception:
+                        continue
+
+                    if not isinstance(
+                        item,
+                        dict
+                    ):
+                        continue
+
+                    entries = item.get(
+                        "entries"
+                    )
+
+                    if isinstance(
+                        entries,
+                        list
+                    ):
+                        youtube_candidates.extend(
+                            entries
+                        )
+                    else:
+                        youtube_candidates.append(
+                            item
+                        )
+
+        print(
+            "YouTube fallback: "
+            f"найдено кандидатов: "
+            f"{len(youtube_candidates)}"
+        )
+
+        accepted_candidate = None
+
+        target_artist = normalize(
+            artist
+        )
+
+        target_title = normalize(
+            title
+        )
+
+        for index, candidate in enumerate(
+            youtube_candidates,
+            1
+        ):
+
+            video_id = (
+                candidate.get("id")
+                or candidate.get("videoId")
+            )
+
+            if not video_id:
+                continue
+
+            candidate_title = (
+                candidate.get("title")
+                or ""
+            )
+
+            candidate_artist = (
+                candidate.get("artist")
+                or candidate.get("uploader")
+                or candidate.get("channel")
+                or candidate.get("creator")
+                or ""
+            )
+
+            candidate_duration = (
+                candidate.get("duration")
+            )
+
+            candidate_url = (
+                candidate.get("webpage_url")
+                or candidate.get("url")
+            )
+
+            if not candidate_url:
+                candidate_url = (
+                    "https://www.youtube.com/watch?v="
+                    + str(video_id)
+                )
+
+            print()
+            print(
+                "YouTube fallback: "
+                f"кандидат {index}/"
+                f"{len(youtube_candidates)}"
+            )
+
+            print(
+                "YouTube fallback: "
+                f"название: {candidate_title}"
+            )
+
+            print(
+                "YouTube fallback: "
+                f"исполнитель: {candidate_artist}"
+            )
+
+            # Для search-result yt-dlp часто возвращает
+            # только базовые поля. Получаем полноценные
+            # метаданные конкретного кандидата перед
+            # окончательным решением.
+
+            candidate_command = [
+                YTDLP,
+                "--dump-single-json",
+                "--no-download",
+                "--no-playlist",
+                "--quiet",
+                "--no-warnings",
+                candidate_url
+            ]
+
+            try:
+                candidate_result = subprocess.run(
+                    candidate_command,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=60
+                )
+
+            except (
+                subprocess.TimeoutExpired,
+                Exception
+            ):
+                print(
+                    "YouTube fallback: "
+                    "не удалось получить данные кандидата."
+                )
+                continue
+
+            candidate_stderr = (
+                candidate_result.stderr
+                or ""
+            )
+
+            if is_youtube_age_error(
+                candidate_stderr
+            ):
+                print(
+                    "YouTube fallback: "
+                    "кандидат пропущен — "
+                    "требуется подтверждение возраста."
+                )
+                continue
+
+            if candidate_result.returncode != 0:
+                print(
+                    "YouTube fallback: "
+                    "кандидат недоступен."
+                )
+                continue
+
+            full_info = parse_ytdlp_youtube_info(
+                candidate_result.stdout
+            )
+
+            if not full_info:
+                try:
+                    full_info = json.loads(
+                        candidate_result.stdout
+                    )
+                except Exception:
+                    full_info = None
+
+            if not isinstance(
+                full_info,
+                dict
+            ):
+                continue
+
+            full_title = (
+                full_info.get("track")
+                or full_info.get("title")
+                or candidate_title
+                or ""
+            )
+
+            full_artist = (
+                full_info.get("artist")
+                or full_info.get("uploader")
+                or full_info.get("creator")
+                or candidate_artist
+                or ""
+            )
+
+            full_duration = (
+                full_info.get("duration")
+            )
+
+            # Проверка названия.
+
+            norm_candidate_title = normalize(
+                full_title
+            )
+
+            norm_candidate_artist = normalize(
+                full_artist
+            )
+
+            title_words = normalize_words(
+                title
+            )
+
+            candidate_title_words = (
+                normalize_words(
+                    full_title
+                )
+            )
+
+            artist_words = normalize_words(
+                artist
+            )
+
+            candidate_artist_words = (
+                normalize_words(
+                    full_artist
+                )
+            )
+
+            title_match = bool(
+                title_words
+                and candidate_title_words
+                and (
+                    title_words
+                    & candidate_title_words
+                )
+            )
+
+            artist_match = bool(
+                artist_words
+                and candidate_artist_words
+                and (
+                    artist_words
+                    & candidate_artist_words
+                )
+            )
+
+            exact_title = (
+                target_title
+                and (
+                    target_title
+                    in norm_candidate_title
+                    or
+                    norm_candidate_title
+                    in target_title
+                )
+            )
+
+            exact_artist = (
+                target_artist
+                and (
+                    target_artist
+                    in norm_candidate_artist
+                    or
+                    norm_candidate_artist
+                    in target_artist
+                )
+            )
+
+            if not (
+                title_match
+                or exact_title
+            ):
+                print(
+                    "YouTube fallback: "
+                    "название не совпало."
+                )
+                continue
+
+            if not (
+                artist_match
+                or exact_artist
+            ):
+                print(
+                    "YouTube fallback: "
+                    "исполнитель не совпал."
+                )
+                continue
+
+            if (
+                full_duration is not None
+                and duration is not None
+            ):
+                try:
+                    difference = abs(
+                        float(full_duration)
+                        - float(duration)
+                    )
+
+                    print(
+                        "YouTube fallback: "
+                        f"разница длительности: "
+                        f"{difference:.1f} сек."
+                    )
+
+                    if difference > 30:
+                        print(
+                            "YouTube fallback: "
+                            "длительность не подходит."
+                        )
+                        continue
+
+                except Exception:
+                    pass
+
+            # Дополнительная проверка age restriction
+            # по полям самого JSON.
+
+            availability = str(
+                full_info.get(
+                    "availability",
+                    ""
+                )
+            ).lower()
+
+            if (
+                "age" in availability
+                and "restrict" in availability
+            ):
+                print(
+                    "YouTube fallback: "
+                    "кандидат пропущен — "
+                    "age restricted."
+                )
+                continue
+
+            accepted_candidate = (
+                candidate_url,
+                full_info
+            )
+
+            print(
+                "YouTube fallback: "
+                "подходящий кандидат найден."
+            )
+
+            print(
+                "YouTube fallback: "
+                f"URL: {candidate_url}"
+            )
+
+            break
+
+        if accepted_candidate:
+            candidate_url, candidate_info = (
+                accepted_candidate
+            )
+
+            print(
+                "YouTube fallback: "
+                "скачивание кандидата через yt-dlp..."
+            )
+
+            if download_with_ytdlp(
+                candidate_url,
+                filepath
+            ):
+                return filepath
+
+            print(
+                "YouTube fallback: "
+                "не удалось скачать "
+                "подходящего YouTube-кандидата."
+            )
+
+        else:
+            print(
+                "YouTube fallback: "
+                "подходящий YouTube-кандидат "
+                "не найден."
+            )
+
+    print(
+        "Не удалось скачать "
+        "подходящий аудиофайл."
+    )
+
+    return None
+'''
+
+    return (
+        text[:start]
+        + new_function
+        + "\n"
+        + text[end:]
+    )
+
+
+def patch_process_single_track(text):
+    old_call = '''    filepath = find_and_download_track(
+        artist,
+        title,
+        duration,
+        output_folder,
+        source_url,
+        source
+    )
+'''
+
+    new_call = '''    filepath = find_and_download_track(
+        artist,
+        title,
+        duration,
+        output_folder,
+        source_url,
+        source,
+        info.get(
+            "youtube_age_restricted",
+            False
+        )
+    )
+'''
+
+    if old_call not in text:
+        raise RuntimeError(
+            "Не найден вызов "
+            "find_and_download_track()."
+        )
+
+    return text.replace(
+        old_call,
+        new_call,
+        1
+    )
+
+
+def patch_youtube_page_info(text):
+    old = '''                return {
+                    "source": "youtube",
+                    "artist": info["artist"],
+                    "title": info["title"],
+                    "album": info.get("album") or "",
+                    "duration": info.get("duration"),
+                    "cover_url": info.get("cover_url"),
+                    "youtube_client": "webpage"
+                }
+'''
+
+    new = '''                return {
+                    "source": "youtube",
+                    "artist": info["artist"],
+                    "title": info["title"],
+                    "album": info.get("album") or "",
+                    "duration": info.get("duration"),
+                    "cover_url": info.get("cover_url"),
+                    "youtube_client": "webpage",
+                    "youtube_age_restricted": False
+                }
+'''
+
+    if old not in text:
+        raise RuntimeError(
+            "Не найден блок возврата "
+            "get_youtube_music_page_info()."
+        )
+
+    return text.replace(
+        old,
+        new,
+        1
+    )
+
+
+def patch_get_youtube_music_info(text):
+    # Обычный успешный yt-dlp результат.
+    old = '''                LAST_YOUTUBE_ERROR = ""
+
+                return info
+'''
+
+    new = '''                LAST_YOUTUBE_ERROR = ""
+
+                info["youtube_age_restricted"] = False
+
+                return info
+'''
+
+    if old not in text:
+        raise RuntimeError(
+            "Не найден успешный return "
+            "get_youtube_music_info()."
+        )
+
+    text = text.replace(
+        old,
+        new,
+        1
+    )
+
+    # HTML fallback должен сохранить факт,
+    # что до него yt-dlp получил age restriction.
+
+    old = '''    if webpage_info:
+        LAST_YOUTUBE_ERROR = ""
+
+        return webpage_info
+'''
+
+    new = '''    if webpage_info:
+        LAST_YOUTUBE_ERROR = ""
+
+        webpage_info[
+            "youtube_age_restricted"
+        ] = age_error_detected
+
+        return webpage_info
+'''
+
+    if old not in text:
+        raise RuntimeError(
+            "Не найден webpage fallback."
+        )
+
+    return text.replace(
+        old,
+        new,
+        1
+    )
+
+
+def main():
+    print("=" * 70)
+    print(
+        "CENSURU.NET — YOUTUBE FALLBACK PATCH"
+    )
+    print("=" * 70)
+
+    if not os.path.isfile(
+        DOWNLOADER
+    ):
+        print()
+        print(
+            "ОШИБКА: не найден downloader.py:"
+        )
+        print(
+            DOWNLOADER
+        )
+        return
+
+    print()
+    print(
+        "Проверка структуры..."
+    )
+
+    with open(
+        DOWNLOADER,
+        "r",
+        encoding="utf-8"
+    ) as f:
+        original = f.read()
+
+    required = (
+        "def get_youtube_music_info(",
+        "def find_and_download_track(",
+        "def download_with_ytdlp(",
+        "def process_single_track(",
+        "def get_youtube_music_page_info("
+    )
+
+    for item in required:
+        if item not in original:
+            print(
+                "ОШИБКА: не найдено:"
+            )
+            print(
+                item
+            )
+            return
+
+        print(
+            "  OK:",
+            item
+        )
+
+    backup = backup_file(
+        DOWNLOADER
+    )
+
+    print()
+    print(
+        "Резервная копия создана:"
+    )
+    print(
+        backup
+    )
+
+    try:
+        patched = original
+
+        print()
+        print(
+            "Изменение "
+            "get_youtube_music_info()..."
+        )
+
+        patched = patch_get_youtube_music_info(
+            patched
+        )
+
+        print(
+            "Изменение "
+            "get_youtube_music_page_info()..."
+        )
+
+        patched = patch_youtube_page_info(
+            patched
+        )
+
+        print(
+            "Изменение source_url..."
+        )
+
+        patched = replace_source_url_block(
+            patched
+        )
+
+        print(
+            "Изменение "
+            "find_and_download_track()..."
+        )
+
+        patched = replace_find_and_download(
+            patched
+        )
+
+        print(
+            "Изменение вызова "
+            "find_and_download_track()..."
+        )
+
+        patched = patch_process_single_track(
+            patched
+        )
+
+        temp_file = (
+            DOWNLOADER
+            + ".youtube_fallback_test.py"
+        )
+
+        with open(
+            temp_file,
+            "w",
+            encoding="utf-8"
+        ) as f:
+            f.write(
+                patched
+            )
+
+        print()
+        print(
+            "Проверка синтаксиса..."
+        )
+
+        try:
+            ast.parse(
+                patched,
+                filename=temp_file
+            )
+
+        except SyntaxError as e:
+            print()
+            print(
+                "ОШИБКА: после патча "
+                "синтаксис не прошёл проверку."
+            )
+
+            print()
+            print(e)
+
+            print()
+            print(
+                "Исходный downloader.py "
+                "НЕ изменён."
+            )
+
+            try:
+                os.remove(
+                    temp_file
+                )
+            except Exception:
+                pass
+
+            return
+
+        print(
+            "  OK: синтаксис."
+        )
+
+        # Дополнительная проверка функций.
+        for function_name in (
+            "get_youtube_music_info",
+            "get_youtube_music_page_info",
+            "find_and_download_track",
+            "process_single_track",
+            "download_with_ytdlp"
+        ):
+            if (
+                "def "
+                + function_name
+                + "("
+            ) not in patched:
+                raise RuntimeError(
+                    "После патча отсутствует "
+                    "функция: "
+                    + function_name
+                )
+
+        os.replace(
+            temp_file,
+            DOWNLOADER
+        )
+
+        print()
+        print(
+            "Патч успешно применён."
+        )
+
+        print()
+        print(
+            "Новая логика:"
+        )
+
+        print(
+            "  YouTube без age restriction "
+            "→ yt-dlp fallback"
+        )
+
+        print(
+            "  YouTube с age restriction "
+            "→ yt-dlp запрещён"
+        )
+
+        print(
+            "  Яндекс → поиск YouTube "
+            "по метаданным → yt-dlp"
+        )
+
+        print(
+            "  Прямое скачивание "
+            "с Яндекс Музыки → не используется"
+        )
+
+    except Exception as e:
+        print()
+        print(
+            "ОШИБКА ПРИ ПАТЧЕ:"
+        )
+        print(
+            e
+        )
+
+        print()
+        print(
+            "Восстанавливаем резервную копию..."
+        )
+
+        shutil.copy2(
+            backup,
+            DOWNLOADER
+        )
+
+        print(
+            "Исходный downloader.py "
+            "восстановлен."
+        )
+
+
+if __name__ == "__main__":
+    main()
