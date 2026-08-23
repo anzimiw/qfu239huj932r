@@ -9,8 +9,8 @@ import subprocess
 import requests
 from urllib.parse import unquote
 
-ENGINE_FOLDER = os.patch.dirname(
-    os.patch.abspath(__file__)
+ENGINE_FOLDER = os.path.dirname(
+    os.path.abspath(__file__)
 )
 
 HEADERS = {
