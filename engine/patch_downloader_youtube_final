@@ -1,0 +1,490 @@
+import os
+import re
+import ast
+import shutil
+from datetime import datetime
+
+
+# ============================================================
+# PATCH:
+# SoundCloud exact candidate duration tolerance
+#
+# Текущая версия downloader.py:
+#   SOUNDCLOUD_DURATION_TOLERANCE = 10.0
+#
+# Изменение:
+#   обычные кандидаты -> 10 секунд
+#   точный кандидат   -> 30 секунд
+#
+# Никаких конкретных названий/исполнителей здесь нет.
+# ============================================================
+
+
+EXACT_MATCH_TOLERANCE = 30.0
+
+
+def read_text(path):
+    with open(
+        path,
+        "r",
+        encoding="utf-8-sig"
+    ) as file:
+        return file.read()
+
+
+def write_text(path, text):
+    with open(
+        path,
+        "w",
+        encoding="utf-8",
+        newline=""
+    ) as file:
+        file.write(text)
+
+
+def backup_file(path):
+    timestamp = datetime.now().strftime(
+        "%Y%m%d_%H%M%S"
+    )
+
+    backup = (
+        path
+        + ".backup_"
+        + timestamp
+    )
+
+    shutil.copy2(
+        path,
+        backup
+    )
+
+    return backup
+
+
+def find_downloader():
+    script_folder = os.path.dirname(
+        os.path.abspath(__file__)
+    )
+
+    candidates = [
+        os.path.join(
+            script_folder,
+            "downloader.py"
+        ),
+        os.path.join(
+            os.path.dirname(script_folder),
+            "engine",
+            "downloader.py"
+        ),
+    ]
+
+    for path in candidates:
+        if os.path.isfile(path):
+            return os.path.abspath(path)
+
+    # Дополнительный поиск рядом со скриптом.
+    root = os.path.dirname(
+        script_folder
+    )
+
+    for current_root, dirs, files in os.walk(root):
+        if "downloader.py" in files:
+            path = os.path.join(
+                current_root,
+                "downloader.py"
+            )
+
+            # Не берём сам патч из случайного совпадения.
+            if os.path.abspath(path) != os.path.abspath(__file__):
+                return os.path.abspath(path)
+
+    return None
+
+
+def check_syntax(path):
+    source = read_text(path)
+
+    ast.parse(
+        source,
+        filename=path
+    )
+
+
+def patch_download_function(source):
+    old_signature = '''def download_from_soundcloud(
+    soundcloud_url,
+    filepath,
+    target_duration=None
+):'''
+
+    new_signature = '''def download_from_soundcloud(
+    soundcloud_url,
+    filepath,
+    target_duration=None,
+    exact_match=False
+):'''
+
+    if old_signature not in source:
+        if new_signature in source:
+            return source, False
+
+        raise RuntimeError(
+            "Сигнатура download_from_soundcloud() "
+            "не найдена."
+        )
+
+    source = source.replace(
+        old_signature,
+        new_signature,
+        1
+    )
+
+    old_tolerance = '''            if difference > SOUNDCLOUD_DURATION_TOLERANCE:
+
+                print(
+                    "SoundCloud: "
+                    f"длительность отличается "
+                    f"на {difference:.1f} сек."
+                )
+
+                return False'''
+
+    new_tolerance = '''            # Обычные кандидаты сохраняют строгий
+            # допуск 10 секунд.
+            #
+            # Для кандидата с exact_match=True
+            # разрешаем до EXACT_MATCH_TOLERANCE.
+            #
+            # Это не отключает проверку длительности.
+            # Она по-прежнему работает, но допускает
+            # более длинную версию точно совпавшего трека.
+
+            duration_tolerance = (
+                EXACT_MATCH_TOLERANCE
+                if exact_match
+                else SOUNDCLOUD_DURATION_TOLERANCE
+            )
+
+            if difference > duration_tolerance:
+
+                print(
+                    "SoundCloud: "
+                    f"длительность отличается "
+                    f"на {difference:.1f} сек."
+                )
+
+                print(
+                    "SoundCloud: допустимый предел: "
+                    f"{duration_tolerance:.1f} сек."
+                )
+
+                return False
+
+            if exact_match and difference > SOUNDCLOUD_DURATION_TOLERANCE:
+
+                print(
+                    "SoundCloud: точный кандидат "
+                    "принят с расширенным допуском "
+                    f"({difference:.1f} сек. из "
+                    f"{duration_tolerance:.1f} сек.)."
+                )'''
+
+    if old_tolerance not in source:
+        raise RuntimeError(
+            "Блок проверки длительности "
+            "в download_from_soundcloud() "
+            "не найден."
+        )
+
+    source = source.replace(
+        old_tolerance,
+        new_tolerance,
+        1
+    )
+
+    return source, True
+
+
+def patch_search_return(source):
+    old_return = '''            "score": best["score"],
+            "candidate": candidate,
+            "search_stage": stage_number,
+            "search_query": query,
+        }'''
+
+    new_return = '''            "score": best["score"],
+            "candidate": candidate,
+            "search_stage": stage_number,
+            "search_query": query,
+
+            # Признак очень точного совпадения.
+            #
+            # Для exact_match НЕ используются конкретные
+            # имена исполнителей или названия треков.
+            #
+            # Проверяем:
+            #   1. высокий score;
+            #   2. точное совпадение названия;
+            #   3. совпадение исполнителя.
+            "exact_match": (
+                best["score"] >= 900
+                and (
+                    best.get("title_ratio", 0)
+                    >= 1.0
+                )
+                and (
+                    best.get("artist_ratio", 0)
+                    >= 1.0
+                )
+            ),
+        }'''
+
+    if old_return not in source:
+        raise RuntimeError(
+            "Блок return результата search_soundcloud() "
+            "не найден."
+        )
+
+    source = source.replace(
+        old_return,
+        new_return,
+        1
+    )
+
+    return source
+
+
+def patch_download_call(source):
+    old_call = '''    if result and download_from_soundcloud(
+        result["url"],
+        filepath,
+        duration
+    ):
+        return filepath'''
+
+    new_call = '''    if result and download_from_soundcloud(
+        result["url"],
+        filepath,
+        duration,
+        result.get(
+            "exact_match",
+            False
+        )
+    ):
+        return filepath'''
+
+    if old_call not in source:
+        raise RuntimeError(
+            "Вызов download_from_soundcloud() "
+            "в find_and_download_track() "
+            "не найден."
+        )
+
+    source = source.replace(
+        old_call,
+        new_call,
+        1
+    )
+
+    return source
+
+
+def patch(source):
+    changes = []
+
+    source, changed = patch_download_function(
+        source
+    )
+
+    if changed:
+        changes.append(
+            "1/3: добавлен параметр exact_match "
+            "и расширенная проверка длительности"
+        )
+    else:
+        changes.append(
+            "1/3: download_from_soundcloud() "
+            "уже содержит exact_match"
+        )
+
+    if '"exact_match": (' not in source:
+        source = patch_search_return(
+            source
+        )
+
+        changes.append(
+            "2/3: добавлена передача признака "
+            "точного совпадения"
+        )
+
+    else:
+        changes.append(
+            "2/3: exact_match уже присутствует "
+            "в результате поиска"
+        )
+
+    if 'result.get(\n            "exact_match"' not in source:
+        source = patch_download_call(
+            source
+        )
+
+        changes.append(
+            "3/3: exact_match передаётся "
+            "в загрузчик SoundCloud"
+        )
+
+    else:
+        changes.append(
+            "3/3: передача exact_match "
+            "уже присутствует"
+        )
+
+    return source, changes
+
+
+def main():
+    print("=" * 70)
+    print(
+        "ПАТЧ SoundCloud: расширенный допуск "
+        "для точного кандидата"
+    )
+    print("=" * 70)
+
+    downloader = find_downloader()
+
+    if not downloader:
+        raise RuntimeError(
+            "Не найден downloader.py.\n\n"
+            "Положи этот патч рядом с папкой engine "
+            "или рядом с downloader.py."
+        )
+
+    print()
+    print(
+        "Найден downloader.py:"
+    )
+    print(
+        downloader
+    )
+
+    print()
+    print(
+        "Проверка исходного синтаксиса..."
+    )
+
+    check_syntax(
+        downloader
+    )
+
+    print(
+        "OK"
+    )
+
+    source = read_text(
+        downloader
+    )
+
+    backup = backup_file(
+        downloader
+    )
+
+    print()
+    print(
+        "Резервная копия создана:"
+    )
+    print(
+        backup
+    )
+
+    try:
+        patched, changes = patch(
+            source
+        )
+
+        print()
+
+        for change in changes:
+            print(change)
+
+        print()
+        print(
+            "Проверка синтаксиса после патча..."
+        )
+
+        ast.parse(
+            patched,
+            filename=downloader
+        )
+
+        print(
+            "OK"
+        )
+
+        write_text(
+            downloader,
+            patched
+        )
+
+        print()
+        print("=" * 70)
+        print(
+            "ПАТЧ УСПЕШНО ПРИМЕНЁН"
+        )
+        print("=" * 70)
+
+        print()
+        print(
+            "Обычный кандидат:"
+        )
+        print(
+            "  допустимая разница: "
+            "10 секунд"
+        )
+
+        print()
+        print(
+            "Точный кандидат:"
+        )
+        print(
+            "  допустимая разница: "
+            f"{EXACT_MATCH_TOLERANCE:.0f} секунд"
+        )
+
+        print()
+        print(
+            "Важно: конкретные исполнители "
+            "или названия треков в патч не добавлялись."
+        )
+
+    except Exception as error:
+        print()
+        print("=" * 70)
+        print(
+            "ОШИБКА ПРИМЕНЕНИЯ ПАТЧА"
+        )
+        print("=" * 70)
+
+        print(
+            f"{type(error).__name__}: "
+            f"{error}"
+        )
+
+        print()
+        print(
+            "Восстанавливаю резервную копию..."
+        )
+
+        shutil.copy2(
+            backup,
+            downloader
+        )
+
+        print(
+            "Backup успешно восстановлен."
+        )
+
+        raise
+
+
+if __name__ == "__main__":
+    main()
