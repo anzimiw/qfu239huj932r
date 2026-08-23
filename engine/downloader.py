@@ -3127,16 +3127,108 @@ def find_and_download_track(
         duration
     )
 
-    if result and download_from_soundcloud(
-        result["url"],
-        filepath,
-        duration,
-        result.get(
-            "exact_match",
-            False
+    if result:
+        # SOUNDCLOUD_NEXT_CANDIDATES_V4
+        #
+        # search_soundcloud() сохраняет существующий
+        # порядок кандидатов по score.
+        #
+        # Сначала пробуем TOP 1.
+        # Если download_from_soundcloud() отклоняет
+        # файл из-за длительности или другой ошибки,
+        # пробуем TOP 2, TOP 3 и TOP 4.
+        #
+        # Логика scoring SoundCloud здесь НЕ меняется.
+
+        soundcloud_candidates = [
+            result
+        ]
+
+        alternatives = result.get(
+            "alternatives",
+            []
         )
-    ):
-        return filepath
+
+        if isinstance(
+            alternatives,
+            list
+        ):
+            soundcloud_candidates.extend(
+                alternatives
+            )
+
+        soundcloud_candidates = (
+            soundcloud_candidates[:5]
+        )
+
+        print(
+            "SoundCloud: кандидатов "
+            "для проверки: "
+            f"{len(soundcloud_candidates)}"
+        )
+
+        for candidate_index, candidate_result in enumerate(
+            soundcloud_candidates,
+            1
+        ):
+
+            print()
+            print(
+                "SoundCloud: проверка кандидата "
+                f"{candidate_index}/"
+                f"{len(soundcloud_candidates)}"
+            )
+
+            print(
+                "SoundCloud: score: "
+                f"{candidate_result.get('score', 0):.1f}"
+            )
+
+            print(
+                "SoundCloud: название кандидата: "
+                f"{candidate_result.get('title', '')}"
+            )
+
+            print(
+                "SoundCloud: исполнитель кандидата: "
+                f"{candidate_result.get('artist', '')}"
+            )
+
+            candidate_url = (
+                candidate_result.get("url")
+            )
+
+            if not candidate_url:
+                print(
+                    "SoundCloud: у кандидата "
+                    "отсутствует URL. Пропуск."
+                )
+                continue
+
+            if download_from_soundcloud(
+                candidate_url,
+                filepath,
+                duration,
+                candidate_result.get(
+                    "exact_match",
+                    False
+                )
+            ):
+                print(
+                    "SoundCloud: кандидат "
+                    f"{candidate_index} подходит."
+                )
+                return filepath
+
+            print(
+                "SoundCloud: кандидат "
+                f"{candidate_index} не подошёл."
+            )
+
+        print(
+            "SoundCloud: все кандидаты "
+            "не подошли."
+        )
 
     # 2. MP3Party
 
