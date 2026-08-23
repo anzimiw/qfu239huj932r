@@ -3113,13 +3113,334 @@ def download_with_ytdlp(
 
 # FIND AND DOWNLOAD
 
+def find_youtube_fallback_url(
+    artist,
+    title,
+    target_duration
+):
+    """
+    Последний fallback для Яндекс Музыки.
+
+    Ищет подходящий трек на YouTube по метаданным.
+    Не скачивает age-restricted результат.
+    Проверяет длительность кандидата.
+    """
+
+    global LAST_YOUTUBE_ERROR
+
+    print()
+    print(
+        "YouTube fallback: "
+        "поиск по метаданным..."
+    )
+
+    query = (
+        f"{artist} {title}"
+    ).strip()
+
+    if not query:
+        print(
+            "YouTube fallback: "
+            "пустой поисковый запрос."
+        )
+        return None
+
+    command = [
+        YTDLP,
+        "--dump-single-json",
+        "--flat-playlist",
+        "--playlist-end",
+        "5",
+        "--quiet",
+        "--no-warnings",
+        "ytsearch5:" + query
+    ]
+
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=90
+        )
+
+    except subprocess.TimeoutExpired:
+        print(
+            "YouTube fallback: "
+            "поиск превысил лимит времени."
+        )
+        return None
+
+    except Exception as e:
+        print(
+            "YouTube fallback: "
+            f"ошибка поиска: {e}"
+        )
+        return None
+
+    stderr = (
+        result.stderr
+        if result.stderr
+        else ""
+    )
+
+    if result.returncode != 0:
+        if is_youtube_age_error(
+            stderr
+        ):
+            LAST_YOUTUBE_ERROR = stderr
+
+            print(
+                "YouTube fallback: "
+                "YouTube запросил "
+                "подтверждение возраста."
+            )
+
+        return None
+
+    try:
+        data = json.loads(
+            result.stdout
+        )
+    except Exception:
+        print(
+            "YouTube fallback: "
+            "не удалось разобрать "
+            "результат поиска."
+        )
+        return None
+
+    entries = (
+        data.get("entries")
+        if isinstance(data, dict)
+        else None
+    )
+
+    if not isinstance(
+        entries,
+        list
+    ):
+        return None
+
+    best_url = None
+    best_difference = None
+
+    try:
+        target = float(
+            target_duration
+        )
+    except Exception:
+        target = None
+
+    for entry in entries:
+        if not isinstance(
+            entry,
+            dict
+        ):
+            continue
+
+        video_id = entry.get(
+            "id"
+        )
+
+        if not video_id:
+            continue
+
+        video_url = (
+            entry.get(
+                "webpage_url"
+            )
+            or
+            f"https://www.youtube.com/watch?v={video_id}"
+        )
+
+        candidate_duration = entry.get(
+            "duration"
+        )
+
+        try:
+            candidate_duration = (
+                float(candidate_duration)
+                if candidate_duration is not None
+                else None
+            )
+        except Exception:
+            candidate_duration = None
+
+        if (
+            target is not None
+            and candidate_duration is not None
+        ):
+            difference = abs(
+                candidate_duration
+                - target
+            )
+
+            if difference > 30:
+                continue
+
+        else:
+            difference = 999999
+
+        if (
+            best_url is None
+            or difference < best_difference
+        ):
+            best_url = video_url
+            best_difference = difference
+
+    if not best_url:
+        print(
+            "YouTube fallback: "
+            "подходящий кандидат "
+            "не найден."
+        )
+        return None
+
+    print(
+        "YouTube fallback: "
+        f"кандидат найден: {best_url}"
+    )
+
+    # ========================================================
+    # ОБЯЗАТЕЛЬНАЯ ПРОВЕРКА ПЕРЕД СКАЧИВАНИЕМ
+    # ========================================================
+
+    print(
+        "YouTube fallback: "
+        "проверка кандидата..."
+    )
+
+    check_command = [
+        YTDLP,
+        "--dump-single-json",
+        "--no-download",
+        "--no-playlist",
+        "--quiet",
+        "--no-warnings",
+        best_url
+    ]
+
+    try:
+        check = subprocess.run(
+            check_command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60
+        )
+
+    except subprocess.TimeoutExpired:
+        print(
+            "YouTube fallback: "
+            "проверка кандидата "
+            "превысила лимит времени."
+        )
+        return None
+
+    except Exception as e:
+        print(
+            "YouTube fallback: "
+            f"ошибка проверки: {e}"
+        )
+        return None
+
+    if check.returncode != 0:
+        error_text = (
+            check.stderr
+            if check.stderr
+            else ""
+        )
+
+        if is_youtube_age_error(
+            error_text
+        ):
+            LAST_YOUTUBE_ERROR = (
+                error_text
+            )
+
+            print(
+                "YouTube fallback: "
+                "кандидат требует "
+                "подтверждения возраста."
+            )
+
+            print(
+                "YouTube fallback: "
+                "скачивание запрещено."
+            )
+
+        else:
+            print(
+                "YouTube fallback: "
+                "кандидат не прошёл проверку."
+            )
+
+        return None
+
+    try:
+        checked_info = json.loads(
+            check.stdout
+        )
+    except Exception:
+        checked_info = {}
+
+    checked_duration = (
+        checked_info.get(
+            "duration"
+        )
+    )
+
+    if (
+        target is not None
+        and checked_duration is not None
+    ):
+        try:
+            checked_duration = float(
+                checked_duration
+            )
+
+            difference = abs(
+                checked_duration
+                - target
+            )
+
+            if difference > 30:
+                print(
+                    "YouTube fallback: "
+                    "длительность кандидата "
+                    "не подходит."
+                )
+
+                print(
+                    "YouTube fallback: "
+                    f"разница {difference:.1f} сек."
+                )
+
+                return None
+
+        except Exception:
+            pass
+
+    print(
+        "YouTube fallback: "
+        "кандидат прошёл проверку."
+    )
+
+    return best_url
+
+
 def find_and_download_track(
     artist,
     title,
     duration,
     output_folder,
     source_url,
-    source
+    source,
+    youtube_age_restricted=False
 ):
     print()
     print("=" * 60)
@@ -3136,7 +3457,9 @@ def find_and_download_track(
         filename
     )
 
-    # 1. SoundCloud
+    # ========================================================
+    # 1. SOUNDCLOUD
+    # ========================================================
 
     status(
         "Проверка SoundCloud..."
@@ -3180,7 +3503,6 @@ def find_and_download_track(
             soundcloud_candidates,
             1
         ):
-
             print()
             print(
                 "SoundCloud: проверка кандидата "
@@ -3204,7 +3526,9 @@ def find_and_download_track(
             )
 
             candidate_url = (
-                candidate_result.get("url")
+                candidate_result.get(
+                    "url"
+                )
             )
 
             if not candidate_url:
@@ -3240,7 +3564,9 @@ def find_and_download_track(
             "не подошли."
         )
 
-    # 2. MP3Party
+    # ========================================================
+    # 2. MP3PARTY
+    # ========================================================
 
     status(
         "Проверка MP3Party..."
@@ -3260,7 +3586,9 @@ def find_and_download_track(
     ):
         return filepath
 
+    # ========================================================
     # 3. MP3TM
+    # ========================================================
 
     status(
         "Проверка MP3TM..."
@@ -3280,7 +3608,9 @@ def find_and_download_track(
     ):
         return filepath
 
-    # 4. AudioStart
+    # ========================================================
+    # 4. AUDIOSTART
+    # ========================================================
 
     status(
         "Проверка AudioStart..."
@@ -3300,21 +3630,9 @@ def find_and_download_track(
     ):
         return filepath
 
-    # 5. YouTube / yt-dlp
-    #
-    # ВАЖНО:
-    # YouTube является последним источником.
-    #
-    # Если исходный запрос YouTube не был
-    # заблокирован возрастным ограничением,
-    # разрешаем обычный fallback через yt-dlp.
-    #
-    # Если YouTube ранее явно сообщил age restriction,
-    # повторный запуск yt-dlp запрещаем.
-    #
-    # Это НЕ зависит от того, что произошло
-    # на SoundCloud. Preview SoundCloud сам по себе
-    # не запрещает YouTube fallback.
+    # ========================================================
+    # 5. YOUTUBE / YT-DLP
+    # ========================================================
 
     print()
     print(
@@ -3334,31 +3652,43 @@ def find_and_download_track(
 
     print(
         "YouTube fallback: "
-        f"LAST_YOUTUBE_ERROR = {LAST_YOUTUBE_ERROR!r}"
+        f"youtube_age_restricted = "
+        f"{youtube_age_restricted!r}"
     )
 
-    youtube_age_restricted = (
+    # --------------------------------------------------------
+    # Сценарий 1:
+    # Исходная ссылка YouTube Music.
+    # Если было подтверждение возраста —
+    # yt-dlp НЕ запускаем.
+    # --------------------------------------------------------
+
+    if (
         source == "youtube"
-        and is_youtube_age_error(
-            LAST_YOUTUBE_ERROR
-        )
-    )
-
-    if youtube_age_restricted:
+        and youtube_age_restricted
+    ):
+        print()
         print(
             "YouTube fallback: "
             "скачивание пропущено."
         )
 
         print(
-            "Причина: YouTube ранее "
+            "Причина: исходный YouTube "
             "запросил подтверждение возраста."
         )
+
+    # --------------------------------------------------------
+    # Сценарий 2:
+    # Обычная YouTube Music без age restriction.
+    # Используем исходный URL.
+    # --------------------------------------------------------
 
     elif (
         source == "youtube"
         and source_url
     ):
+        print()
         print(
             "YouTube fallback: "
             "возрастное ограничение "
@@ -3383,14 +3713,69 @@ def find_and_download_track(
 
         print(
             "YouTube fallback: "
-            "yt-dlp не смог скачать аудиофайл."
+            "yt-dlp не смог скачать "
+            "аудиофайл."
         )
 
-    else:
+    # --------------------------------------------------------
+    # Сценарий 3:
+    # Исходная ссылка Яндекс Музыки.
+    #
+    # Прямое скачивание с Яндекса НЕ используем.
+    # Ищем соответствующий трек на YouTube
+    # по артисту + названию.
+    # --------------------------------------------------------
+
+    elif source == "yandex":
+        print()
         print(
             "YouTube fallback: "
-            "не запущен — исходный источник "
-            "не является YouTube или отсутствует URL."
+            "исходный источник — Яндекс Музыка."
+        )
+
+        print(
+            "YouTube fallback: "
+            "поиск соответствующего трека "
+            "на YouTube по метаданным."
+        )
+
+        fallback_url = (
+            find_youtube_fallback_url(
+                artist,
+                title,
+                duration
+            )
+        )
+
+        if fallback_url:
+            print(
+                "YouTube fallback: "
+                "запуск yt-dlp..."
+            )
+
+            if download_with_ytdlp(
+                fallback_url,
+                filepath
+            ):
+                print(
+                    "YouTube fallback: "
+                    "аудиофайл успешно получен."
+                )
+
+                return filepath
+
+            print(
+                "YouTube fallback: "
+                "yt-dlp не смог скачать "
+                "найденный YouTube-трек."
+            )
+
+    else:
+        print()
+        print(
+            "YouTube fallback: "
+            "не запущен — отсутствует "
+            "подходящий источник."
         )
 
     print(
@@ -3502,7 +3887,8 @@ def process_single_track(
         duration,
         output_folder,
         source_url,
-        source
+        source,
+        youtube_age_restricted=youtube_age_restricted
     )
 
     if not filepath:
