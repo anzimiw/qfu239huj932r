@@ -1,11 +1,8 @@
 # Censuru.net — MP3Party source
-# Автономная логика поиска MP3Party.
+# Логика MP3Party, вынесенная из downloader.py.
 #
-# Источник логики:
-# downloader.py
-#
-# Модуль намеренно НЕ импортирует downloader.py.
-# Все необходимые зависимости определены здесь.
+# Модуль автономный и не импортирует downloader.py.
+
 
 import os
 import re
@@ -82,20 +79,6 @@ def normalize(text):
     )
 
     text = re.sub(
-        r"\(MP3\.tm\)",
-        "",
-        text,
-        flags=re.I
-    )
-
-    text = re.sub(
-        r"\(audiostart\.net\)",
-        "",
-        text,
-        flags=re.I
-    )
-
-    text = re.sub(
         r"\.mp3$",
         "",
         text,
@@ -103,12 +86,6 @@ def normalize(text):
     )
 
     text = text.lower()
-
-    text = re.sub(
-        r"\bof\s+buda\b",
-        "og buda",
-        text
-    )
 
     text = re.sub(
         r"\bfeaturing\b",
@@ -159,68 +136,36 @@ def normalize_words(text):
 # CANDIDATE SCORING
 # ============================================================
 
-def candidate_text_score(
-    filename,
-    artist,
-    title
-):
+def candidate_text_score(filename, artist, title):
     """
-    Оригинальная система оценки кандидатов
-    MP3Party / MP3TM / AudioStart.
+    Совместимая функция для MP3Party/MP3TM/AudioStart.
 
-    Функция сохранена без изменения логики.
+    SoundCloud использует отдельную soundcloud_candidate_score(),
+    поэтому изменение каскада SoundCloud не ломает остальные источники.
     """
 
-    candidate = normalize(
-        filename
-    )
+    candidate = normalize(filename)
+    wanted_artist = normalize(artist)
+    wanted_title = normalize(title)
 
-    wanted_artist = normalize(
-        artist
-    )
+    candidate_words = normalize_words(candidate)
+    artist_words = normalize_words(wanted_artist)
+    title_words = normalize_words(wanted_title)
 
-    wanted_title = normalize(
-        title
-    )
-
-    candidate_words = normalize_words(
-        candidate
-    )
-
-    artist_words = normalize_words(
-        wanted_artist
-    )
-
-    title_words = normalize_words(
-        wanted_title
-    )
-
-    if (
-        not artist_words
-        or not title_words
-    ):
+    if not artist_words or not title_words:
         return -100000
 
     artist_ratio = (
-        len(
-            artist_words
-            & candidate_words
-        )
+        len(artist_words & candidate_words)
         / len(artist_words)
     )
 
     title_ratio = (
-        len(
-            title_words
-            & candidate_words
-        )
+        len(title_words & candidate_words)
         / len(title_words)
     )
 
-    if (
-        artist_ratio < 0.5
-        or title_ratio < 0.5
-    ):
+    if artist_ratio < 0.5 or title_ratio < 0.5:
         return -100000
 
     score = 0
@@ -302,13 +247,7 @@ def is_duration_acceptable(
 
 
 def get_duration(url):
-    """
-    Получает длительность удалённого
-    MP3Party-файла через ffprobe.
-    """
-
     try:
-
         result = subprocess.run(
             [
                 FFPROBE,
@@ -350,27 +289,11 @@ def search_mp3party(
     title,
     target_duration=None
 ):
-    """
-    Ищет трек на MP3Party.
-
-    Возвращает:
-
-        {
-            "url": "...",
-            "referer": "..."
-        }
-
-    либо None.
-    """
-
     try:
-
         response = requests.get(
             "https://mp3party.net/search",
             params={
-                "q": (
-                    f"{artist} {title}"
-                )
+                "q": f"{artist} {title}"
             },
             headers=HEADERS,
             timeout=TIMEOUT
@@ -399,9 +322,7 @@ def search_mp3party(
             song_id,
             found_title,
             found_url
-        ) in pattern.findall(
-            text
-        ):
+        ) in pattern.findall(text):
 
             score = candidate_text_score(
                 f"{found_artist} - {found_title}",
@@ -412,19 +333,17 @@ def search_mp3party(
             if score < 0:
                 continue
 
-            candidates.append(
-                {
-                    "url": (
-                        "https://dl2.mp3party.net/"
-                        f"download/{song_id}"
-                    ),
-                    "referer": (
-                        "https://mp3party.net/music/"
-                        f"{song_id}"
-                    ),
-                    "text_score": score
-                }
-            )
+            candidates.append({
+                "url": (
+                    "https://dl2.mp3party.net/"
+                    f"download/{song_id}"
+                ),
+                "referer": (
+                    f"https://mp3party.net/music/"
+                    f"{song_id}"
+                ),
+                "text_score": score
+            })
 
         if not candidates:
             return None
@@ -444,7 +363,6 @@ def search_mp3party(
                 duration,
                 target_duration
             ):
-
                 return {
                     "url": candidate["url"],
                     "referer": candidate["referer"]
@@ -454,68 +372,3 @@ def search_mp3party(
         pass
 
     return None
-
-
-# ============================================================
-# SELF TEST
-# ============================================================
-
-if __name__ == "__main__":
-
-    print("=" * 70)
-    print(
-        "CENSURU.NET — MP3PARTY MODULE TEST"
-    )
-    print("=" * 70)
-
-    print(
-        "\nENGINE_FOLDER:"
-    )
-    print(
-        ENGINE_FOLDER
-    )
-
-    print(
-        "\nFFPROBE:"
-    )
-    print(
-        FFPROBE
-    )
-
-    print(
-        "\nПроверка функций:"
-    )
-
-    print(
-        "  normalize:",
-        callable(normalize)
-    )
-
-    print(
-        "  normalize_words:",
-        callable(normalize_words)
-    )
-
-    print(
-        "  candidate_text_score:",
-        callable(candidate_text_score)
-    )
-
-    print(
-        "  is_duration_acceptable:",
-        callable(is_duration_acceptable)
-    )
-
-    print(
-        "  get_duration:",
-        callable(get_duration)
-    )
-
-    print(
-        "  search_mp3party:",
-        callable(search_mp3party)
-    )
-
-    print(
-        "\nМодуль загружен успешно."
-    )
