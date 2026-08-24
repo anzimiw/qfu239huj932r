@@ -8,14 +8,8 @@ CENSURU.NET — ИСТОЧНИК MP3TM
 Логика вынесена из downloader.py.
 """
 
-from source_utils import (
-    normalize,
-    normalize_words,
-    clean_filename,
-    candidate_text_score,
-    is_duration_acceptable,
-    get_duration,
-)
+from sources_utils import clean_filename, candidate_text_score, is_duration_acceptable, get_duration
+
 
 # ============================================================
 # ОБЩИЕ ФУНКЦИИ, НЕОБХОДИМЫЕ MP3TM
