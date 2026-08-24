@@ -9,6 +9,7 @@ import subprocess
 import requests
 from urllib.parse import unquote
 
+from sources_utils import normalize, normalize_words
 ENGINE_FOLDER = os.path.dirname(
     os.path.abspath(__file__)
 )
@@ -3710,3 +3711,251 @@ def download_from_soundcloud(
 
     return False
 
+
+def clean_soundcloud_text(text):
+    """
+    Удаляет только служебные модификаторы, не являющиеся
+    основной частью названия трека.
+
+    Пример:
+        Artist - Track (Prod by XXX) [Sped Up]
+        ->
+        Artist - Track
+    """
+    text = html.unescape(str(text or ""))
+    text = unquote(text)
+
+    text = text.replace("–", "-").replace("—", "-")
+    text = text.replace("_", " ")
+
+    # Удаляем конструкции produced by / prod by с последующим именем.
+    text = re.sub(
+        r"\b(?:prod(?:uced)?\s*by)\b[\s:.-]*"
+        r"[^()\[\]{}|/,;]+",
+        " ",
+        text,
+        flags=re.I
+    )
+
+    # Удаляем распространённые модификаторы внутри скобок/квадратных скобок.
+    modifier_pattern = (
+        r"\b(?:remix|slowed|slowed\s*\+\s*reverb|"
+        r"sped\s*up|speed\s*up|speedup|nightcore|phonk|"
+        r"edit|version|mix|extended(?:\s+mix)?|"
+        r"remastered|remaster|rework|bootleg|flip|mashup|"
+        r"live|acoustic|instrumental|club|hardstyle|bass)\b"
+    )
+
+    for _ in range(3):
+        text = re.sub(
+            rf"[\(\[\{{][^()\[\]{{}}]*?{modifier_pattern}"
+            rf"[^()\[\]{{}}]*?[\)\]\}}]",
+            " ",
+            text,
+            flags=re.I
+        )
+
+    # После удаления содержимого могут остаться пустые скобки.
+    text = re.sub(r"\(\s*\)|\[\s*\]|\{\s*\}", " ", text)
+
+    # Удаляем одиночные служебные слова, если они остались вне скобок.
+    text = re.sub(
+        modifier_pattern,
+        " ",
+        text,
+        flags=re.I
+    )
+
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s*[-:|]+\s*", " ", text)
+
+    return normalize(text)
+
+
+def soundcloud_query_variants(artist, title):
+    """
+    Возвращает каскад поисковых запросов:
+
+    1. artist + original title
+    2. artist + cleaned title
+    3. cleaned title
+    4. flexible words
+    """
+    original_artist = normalize(artist)
+    original_title = normalize(title)
+
+    cleaned_artist = clean_soundcloud_text(artist)
+    cleaned_title = clean_soundcloud_text(title)
+
+    variants = []
+
+    def add(value):
+        value = re.sub(r"\s+", " ", value or "").strip()
+        if value and value not in variants:
+            variants.append(value)
+
+    # 1. Строго.
+    add(f"{original_artist} {original_title}")
+
+    # 2. Исполнитель + очищенное название.
+    add(f"{original_artist} {cleaned_title}")
+
+    # Дополнительный вариант с очищенным исполнителем.
+    add(f"{cleaned_artist} {cleaned_title}")
+
+    # 3. Только очищенное название.
+    add(cleaned_title)
+
+    # 4. Гибкий поиск.
+    artist_words = [
+        word for word in normalize_words(cleaned_artist)
+        if len(word) >= 2
+    ]
+    title_words = [
+        word for word in normalize_words(cleaned_title)
+        if len(word) >= 2
+    ]
+
+    # Сначала сохраняем наиболее информативные слова.
+    flexible_words = []
+    for word in artist_words + title_words:
+        if word not in flexible_words:
+            flexible_words.append(word)
+
+    if flexible_words:
+        add(" ".join(flexible_words))
+
+    return variants
+
+
+def soundcloud_candidate_score(
+    found_artist,
+    found_title,
+    requested_artist,
+    requested_title,
+    stage
+):
+    """
+    Оценивает SoundCloud-кандидата.
+
+    Важное отличие от старой логики:
+    служебные модификаторы не являются автоматическим reject.
+
+    На поздних этапах поиска допускается, что исполнитель может
+    находиться внутри title, а title может частично совпадать
+    с artist/title в разных полях.
+    """
+    found_artist = normalize(found_artist)
+    found_title = normalize(found_title)
+
+    requested_artist = normalize(requested_artist)
+    requested_title = normalize(requested_title)
+
+    cleaned_artist = clean_soundcloud_text(requested_artist)
+    cleaned_title = clean_soundcloud_text(requested_title)
+
+    candidate_text = normalize(
+        f"{found_artist} {found_title}"
+    )
+
+    if not candidate_text:
+        return -100000
+
+    artist_words = normalize_words(cleaned_artist)
+    title_words = normalize_words(cleaned_title)
+    candidate_words = normalize_words(candidate_text)
+
+    if not artist_words or not title_words:
+        return -100000
+
+    artist_hits = len(artist_words & candidate_words)
+    title_hits = len(title_words & candidate_words)
+
+    artist_ratio = artist_hits / len(artist_words)
+    title_ratio = title_hits / len(title_words)
+
+    # Строгие этапы требуют нормального совпадения.
+    if stage <= 2:
+        if artist_ratio < 0.5 or title_ratio < 0.5:
+            return -100000
+
+    # На гибком этапе допускаем отсутствие исполнителя в user.username,
+    # если он присутствует непосредственно в title.
+    if stage >= 3:
+        if title_ratio < 0.5:
+            return -100000
+
+    score = 0
+
+    # Основное совпадение названия.
+    score += int(title_ratio * 700)
+
+    # Исполнитель.
+    score += int(artist_ratio * 500)
+
+    # Точное название.
+    if cleaned_title and cleaned_title in candidate_text:
+        score += 350
+
+    # Точный исполнитель.
+    if cleaned_artist and cleaned_artist in candidate_text:
+        score += 300
+
+    # Полное сочетание.
+    combined_1 = normalize(f"{cleaned_artist} {cleaned_title}")
+    combined_2 = normalize(f"{cleaned_title} {cleaned_artist}")
+
+    if combined_1 and combined_1 in candidate_text:
+        score += 450
+
+    if combined_2 and combined_2 in candidate_text:
+        score += 400
+
+    # Проверяем отдельно поля SoundCloud.
+    if cleaned_artist:
+        if cleaned_artist in found_artist:
+            score += 250
+
+        if cleaned_artist in found_title:
+            score += 180
+
+    if cleaned_title:
+        if cleaned_title in found_title:
+            score += 300
+
+        if cleaned_title in found_artist:
+            score += 80
+
+    # Штраф за слова, не относящиеся к artist/title.
+    expected_words = artist_words | title_words
+    extra_words = candidate_words - expected_words
+
+    # Служебные слова не должны давать огромный штраф.
+    service_words = set()
+    for modifier in SOUNDCLOUD_SERVICE_MODIFIERS:
+        service_words.update(normalize_words(modifier))
+
+    meaningful_extra_words = extra_words - service_words
+
+    score -= len(meaningful_extra_words) * 12
+
+    # Служебные модификаторы дают небольшой штраф,
+    # но не выбрасывают кандидата.
+    modifier_hits = 0
+    for modifier in SOUNDCLOUD_SERVICE_MODIFIERS:
+        modifier_words = normalize_words(modifier)
+        if modifier_words and modifier_words.issubset(candidate_words):
+            requested_words = normalize_words(
+                f"{requested_artist} {requested_title}"
+            )
+            if not modifier_words.issubset(requested_words):
+                modifier_hits += 1
+
+    score -= modifier_hits * 35
+
+    # На строгом этапе наличие лишних модификаторов снижает рейтинг сильнее,
+    # но всё ещё не является абсолютным reject.
+    if stage == 1:
+        score -= modifier_hits * 60
+
+    return score
