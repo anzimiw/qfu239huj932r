@@ -19,6 +19,8 @@ from sources_soundcloud import (
 )
 
 from sources_mp3party import search_mp3party
+from sources_mp3tm import search_mp3tm
+from sources_audiostart import search_audiostart
 
 ENGINE_FOLDER = os.path.dirname(
     os.path.abspath(__file__)
@@ -2462,16 +2464,6 @@ SOUNDCLOUD_SEARCH_URL = (
 )
 
 
-
-
-
-
-
-
-
-
-
-
 def clean_soundcloud_text(text):
     """
     Удаляет только служебные модификаторы, не являющиеся
@@ -2784,192 +2776,6 @@ def is_duration_acceptable(
         <= tolerance
     )
 
-
-def search_mp3tm(
-    artist,
-    title,
-    target_duration=None
-):
-    query = (
-        f"{artist} {title}"
-    )
-
-    slug = re.sub(
-        r"[^a-zA-Z0-9а-яА-ЯёЁ]+",
-        "-",
-        query
-    ).strip(
-        "-"
-    ).lower()
-
-    page_url = (
-        f"https://{slug}.mp3tm.net/"
-    )
-
-    try:
-        response = requests.get(
-            page_url,
-            headers=HEADERS,
-            timeout=TIMEOUT
-        )
-
-        if response.status_code != 200:
-            return None
-
-        links = list(
-            dict.fromkeys(
-                re.findall(
-                    r'https?://[^"\']+\.mp3'
-                    r'(?:\?[^"\']*)?',
-                    html.unescape(
-                        response.text
-                    ),
-                    re.I
-                )
-            )
-        )
-
-        candidates = []
-
-        for link in links:
-            filename = clean_filename(
-                link.split("/")[-1]
-            )
-
-            score = candidate_text_score(
-                filename,
-                artist,
-                title
-            )
-
-            if score >= 0:
-                candidates.append(
-                    (score, link)
-                )
-
-        candidates.sort(
-            reverse=True
-        )
-
-        for _, link in candidates:
-            duration = get_duration(
-                link
-            )
-
-            if is_duration_acceptable(
-                duration,
-                target_duration
-            ):
-                return {
-                    "url": link,
-                    "referer": page_url
-                }
-
-    except Exception:
-        pass
-
-    return None
-
-def search_audiostart(
-    artist,
-    title,
-    target_duration=None
-):
-    try:
-        response = requests.get(
-            "https://audiostart.net/",
-            params={
-                "song": f"{artist} {title}"
-            },
-            headers=HEADERS,
-            timeout=TIMEOUT
-        )
-
-        if response.status_code != 200:
-            return None
-
-        links = list(
-            dict.fromkeys(
-                re.findall(
-                    r'href=["\']'
-                    r'([^"\']*?/getmp3/[^"\']+)'
-                    r'["\']',
-                    html.unescape(
-                        response.text
-                    ),
-                    re.I
-                )
-            )
-        )
-
-        candidates = []
-
-        for link in links:
-            try:
-                encoded = link.split(
-                    "/getmp3/",
-                    1
-                )[1]
-
-                decoded = unquote(
-                    base64.b64decode(
-                        encoded
-                    ).decode(
-                        "utf-8",
-                        errors="ignore"
-                    )
-                )
-
-                score = candidate_text_score(
-                    decoded,
-                    artist,
-                    title
-                )
-
-                if score >= 0:
-                    if link.startswith("//"):
-                        link = (
-                            "https:"
-                            + link
-                        )
-
-                    elif link.startswith("/"):
-                        link = (
-                            "https://audiostart.net"
-                            + link
-                        )
-
-                    candidates.append(
-                        (score, link)
-                    )
-
-            except Exception:
-                continue
-
-        candidates.sort(
-            reverse=True
-        )
-
-        for _, link in candidates:
-            duration = get_duration(
-                link
-            )
-
-            if is_duration_acceptable(
-                duration,
-                target_duration
-            ):
-                return {
-                    "url": link,
-                    "referer": (
-                        "https://audiostart.net/"
-                    )
-                }
-
-    except Exception:
-        pass
-
-    return None
 
 # YT-DLP AUDIO DOWNLOAD
 
