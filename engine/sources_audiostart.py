@@ -8,7 +8,13 @@ CENSURU.NET — ИСТОЧНИК AUDIOSTART
 Логика вынесена из downloader.py.
 """
 
+import requests
+import re
+import html
+import base64
+
 from sources_utils import candidate_text_score, is_duration_acceptable, get_duration
+
 
 
 from urllib.parse import unquote
