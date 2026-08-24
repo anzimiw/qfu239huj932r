@@ -342,185 +342,130 @@ def get_yandex_music_info(url):
         "Получение информации из Яндекс Музыки..."
     )
 
-    parsed = parse_yandex_url(url)
-
-    if not parsed:
-        print(
-            "Не удалось определить ID трека "
-            "Яндекс Музыки."
-        )
-        return None
-
-    track_id = parsed["track_id"]
-    album_id = parsed["album_id"]
-
     try:
         response = requests.get(
-            f"https://api.music.yandex.net/tracks/{track_id}",
-            headers=YANDEX_HEADERS,
+            url,
+            headers=HEADERS,
             timeout=TIMEOUT
         )
-
-    except requests.RequestException:
+    except requests.RequestException as e:
         print(
-            "Не удалось получить данные "
+            "Не удалось получить страницу "
             "Яндекс Музыки."
+        )
+        print(
+            f"Ошибка: {e}"
         )
         return None
 
     if response.status_code != 200:
         print(
-            "Не удалось получить метаданные трека."
+            "Яндекс Музыка вернула HTTP "
+            f"{response.status_code}."
         )
         return None
 
-    try:
-        data = response.json()
+    text = response.text
 
-    except Exception:
+    state = extract_yandex_playlist_state(
+        text
+    )
+
+    tracks = state.get(
+        "tracks",
+        []
+    )
+
+    if not tracks:
         print(
-            "Не удалось обработать данные "
-            "Яндекс Музыки."
+            "В HTML Яндекс Музыки "
+            "не найдены данные трека."
         )
         return None
 
-    result = data.get("result")
-
-    if isinstance(result, dict):
-        result = result.get(
-            "track",
-            result
-        )
-
-    elif isinstance(result, list):
-        result = (
-            result[0]
-            if result
-            else None
-        )
-
-    if not isinstance(result, dict):
-        return None
-
-    track = result
-
-    artists = track.get("artists") or []
-
-    artist = ", ".join(
-        str(x.get("name"))
-        for x in artists
-        if (
-            isinstance(x, dict)
-            and x.get("name")
-        )
+    # Для обычной ссылки на трек
+    # определяем ID из URL.
+    parsed = parse_yandex_url(
+        url
     )
 
-    title = track.get("title") or ""
-    album = ""
+    target_track_id = ""
 
-    albums = track.get("albums")
-
-    if (
-        isinstance(albums, list)
-        and albums
-        and isinstance(albums[0], dict)
-    ):
-        album = albums[0].get("title") or ""
-
-        album_id = str(
-            albums[0].get("id")
-            or album_id
+    if parsed:
+        target_track_id = str(
+            parsed.get(
+                "track_id"
+            )
+            or ""
         )
 
-    duration = None
+    selected_track = None
 
-    if track.get("durationMs") is not None:
-        try:
-            duration = (
-                float(track["durationMs"])
-                / 1000
-            )
-        except Exception:
-            pass
-
-    cover_uri = (
-        track.get("coverUri")
-        or track.get("ogImage")
-    )
-
-    cover_url = None
-
-    if cover_uri:
-        cover_url = str(
-            cover_uri
-        ).replace(
-            "%%",
-            "720x720"
-        )
-
-        if cover_url.startswith("//"):
-            cover_url = (
-                "https:"
-                + cover_url
+    if target_track_id:
+        for track in tracks:
+            current_id = str(
+                track.get("id")
+                or track.get("realId")
+                or ""
             )
 
-        elif not cover_url.startswith(
-            (
-                "http://",
-                "https://"
-            )
-        ):
-            cover_url = (
-                "https://"
-                + cover_url
-            )
+            if current_id == target_track_id:
+                selected_track = track
+                break
 
-    if (
-        not artist
-        or not title
-        or duration is None
-    ):
+    # Если ID из URL не найден,
+    # но HTML содержит ровно один трек,
+    # используем его.
+    if selected_track is None and len(tracks) == 1:
+        selected_track = tracks[0]
+
+    if selected_track is None:
         print(
             "Не удалось определить "
-            "данные трека."
+            "нужный трек Яндекс Музыки."
+        )
+        return None
+
+    info = yandex_track_to_info(
+        selected_track
+    )
+
+    if not info:
+        print(
+            "Не удалось определить "
+            "метаданные трека Яндекс Музыки."
         )
         return None
 
     print(
-        f"Исполнитель: {artist}"
+        f"Исполнитель: {info['artist']}"
     )
 
     print(
-        f"Название: {title}"
+        f"Название: {info['title']}"
     )
 
     print(
         f"Альбом: "
-        f"{album or 'не определён'}"
+        f"{info['album'] or 'не определён'}"
     )
 
     print(
         f"Длительность: "
-        f"{format_duration(duration)}"
+        f"{format_duration(info['duration'])}"
     )
 
     print(
         "Обложка: "
-        f"{'НАЙДЕНА' if cover_url else 'НЕ НАЙДЕНА'}"
+        f"{'НАЙДЕНА' if info['cover_url'] else 'НЕ НАЙДЕНА'}"
     )
 
-    return {
-        "source": "yandex",
-        "artist": artist,
-        "title": title,
-        "album": album,
-        "duration": duration,
-        "cover_url": cover_url,
-        "track_id": track_id,
-        "album_id": album_id
-    }
+    print(
+        "Синхронизированный текст Яндекс: "
+        f"{'ДА' if info.get('has_sync_lyrics') else 'НЕТ'}"
+    )
 
-# YOUTUBE AGE RESTRICTION
+    return info
 
 def is_youtube_age_error(error_text):
     if not error_text:
@@ -1965,85 +1910,90 @@ def get_playlist_tracks(url):
         "Получение списка треков плейлиста..."
     )
 
-    command = [
-        YTDLP,
-        "--flat-playlist",
-        "--dump-single-json",
-        "--quiet",
-        "--no-warnings",
-        url
-    ]
-
     try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=120
+        response = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=TIMEOUT
         )
-
-        if result.returncode != 0:
-            print(
-                "Не удалось получить плейлист."
-            )
-            return None
-
-        data = json.loads(
-            result.stdout
-        )
-
-        tracks = []
-
-        for entry in (
-            data.get("entries")
-            or []
-        ):
-            if not entry:
-                continue
-
-            track_url = (
-                entry.get("webpage_url")
-                or entry.get("original_url")
-                or entry.get("url")
-            )
-
-            if not track_url:
-                continue
-
-            if not track_url.startswith(
-                "http"
-            ):
-                track_url = (
-                    "https://music.youtube.com/"
-                    "watch?v="
-                    + track_url
-                )
-
-            tracks.append(
-                track_url
-            )
-
-        if not tracks:
-            return None
-
-        return {
-            "title": (
-                data.get("title")
-                or "YouTube Music"
-            ),
-            "tracks": tracks
-        }
-
-    except Exception:
+    except requests.RequestException as e:
         print(
-            "Не удалось получить плейлист."
+            "Не удалось получить "
+            "страницу плейлиста Яндекс Музыки."
         )
-
+        print(
+            f"Ошибка: {e}"
+        )
         return None
 
-# AUDIO VALIDATION
+    if response.status_code != 200:
+        print(
+            "Яндекс Музыка вернула HTTP "
+            f"{response.status_code}."
+        )
+        return None
+
+    state = extract_yandex_playlist_state(
+        response.text
+    )
+
+    title = (
+        state.get("title")
+        or "Яндекс Музыка"
+    )
+
+    yandex_tracks = (
+        state.get("tracks")
+        or []
+    )
+
+    if not yandex_tracks:
+        print(
+            "Треки Яндекс-плейлиста "
+            "в HTML не найдены."
+        )
+        return None
+
+    tracks = []
+
+    for track in yandex_tracks:
+        track_id = (
+            track.get("id")
+            or track.get("realId")
+        )
+
+        if not track_id:
+            continue
+
+        tracks.append(
+            "https://music.yandex.ru/album/"
+            + str(
+                track.get("albumId")
+                or ""
+            )
+            + "/track/"
+            + str(track_id)
+        )
+
+    if not tracks:
+        print(
+            "Не удалось сформировать "
+            "ссылки на треки Яндекс-плейлиста."
+        )
+        return None
+
+    print(
+        f"Название плейлиста: {title}"
+    )
+
+    print(
+        f"Найдено треков: {len(tracks)}"
+    )
+
+    return {
+        "title": title,
+        "tracks": tracks
+    }
 
 def validate_audio_file(
     filename
@@ -3663,15 +3613,36 @@ def process_playlist(url):
 # URL HELPERS
 
 def is_playlist_url(url):
+    if not url:
+        return False
+
+    lowered = url.lower()
+
+    if (
+        "music.yandex.ru/playlists/"
+        in lowered
+        or
+        "music.yandex.com/playlists/"
+        in lowered
+        or
+        "music.yandex.kz/playlists/"
+        in lowered
+        or
+        "music.yandex.by/playlists/"
+        in lowered
+        or
+        "music.yandex.uz/playlists/"
+        in lowered
+    ):
+        return True
+
     return (
-        "list=" in url
+        "list=" in lowered
         and (
-            "youtube.com" in url
-            or "music.youtube.com" in url
+            "youtube.com" in lowered
+            or "music.youtube.com" in lowered
         )
     )
-
-# ENVIRONMENT
 
 def check_environment():
     errors = []
