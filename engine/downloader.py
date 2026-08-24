@@ -337,135 +337,643 @@ def parse_yandex_url(url):
         )
     }
 
+
+
+# ============================================================
+# YANDEX MUSIC HTML FALLBACK V2
+# ============================================================
+
+def _yandex_extract_balanced_json(text, start):
+    """
+    Извлекает JSON-объект начиная с позиции '{',
+    корректно учитывая вложенные объекты и строки.
+    """
+
+    if start < 0 or start >= len(text):
+        return None
+
+    if text[start] != "{":
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+
+    for index in range(start, len(text)):
+        char = text[index]
+
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+            continue
+
+        if char == "{":
+            depth += 1
+
+        elif char == "}":
+            depth -= 1
+
+            if depth == 0:
+                return text[start:index + 1]
+
+    return None
+
+
+def _yandex_find_track_data_in_html(html_text, track_id):
+    """
+    Ищет полноценный объект data нужного трека
+    непосредственно в HTML страницы Яндекс Музыки.
+
+    Ожидаемая структура:
+
+    "value":{
+        "id":"154676063",
+        ...
+        "data":{
+            "id":"154676063",
+            "title":"Отражение",
+            ...
+        }
+    }
+    """
+
+    track_id = str(track_id)
+
+    marker = f'"id":"{track_id}"'
+
+    position = 0
+
+    while True:
+        position = html_text.find(marker, position)
+
+        if position < 0:
+            return None
+
+        # Берём разумный участок после найденного ID.
+        chunk_end = min(
+            len(html_text),
+            position + 50000
+        )
+
+        chunk = html_text[position:chunk_end]
+
+        # Ищем data после найденного ID.
+        data_marker = '"data":'
+
+        data_position = chunk.find(data_marker)
+
+        if data_position >= 0:
+
+            object_start = (
+                position
+                + data_position
+                + len(data_marker)
+            )
+
+            while (
+                object_start < len(html_text)
+                and html_text[object_start].isspace()
+            ):
+                object_start += 1
+
+            if (
+                object_start < len(html_text)
+                and html_text[object_start] == "{"
+            ):
+
+                raw = _yandex_extract_balanced_json(
+                    html_text,
+                    object_start
+                )
+
+                if raw:
+
+                    try:
+                        data = json.loads(raw)
+                    except Exception:
+                        data = None
+
+                    if isinstance(data, dict):
+
+                        if str(data.get("id")) == track_id:
+                            return data
+
+        position += len(marker)
+
+
+def _yandex_music_info_from_html(
+    track_id,
+    album_id
+):
+    """
+    Резервное получение метаданных Яндекс Музыки
+    непосредственно из HTML страницы трека.
+    """
+
+    print(
+        "Получение метаданных непосредственно "
+        "со страницы Яндекс Музыки..."
+    )
+
+    urls = []
+
+    if album_id:
+        urls.append(
+            "https://music.yandex.ru/"
+            f"album/{album_id}/track/{track_id}"
+        )
+
+    urls.append(
+        f"https://music.yandex.ru/track/{track_id}"
+    )
+
+    for page_url in urls:
+
+        try:
+            response = requests.get(
+                page_url,
+                headers=HEADERS,
+                timeout=TIMEOUT
+            )
+
+        except requests.RequestException as exc:
+
+            print(
+                "Ошибка получения HTML Яндекс Музыки: "
+                f"{exc}"
+            )
+
+            continue
+
+        if response.status_code != 200:
+
+            print(
+                "HTML Яндекс Музыки вернул HTTP "
+                f"{response.status_code}"
+            )
+
+            continue
+
+        html_text = response.text
+
+        track = _yandex_find_track_data_in_html(
+            html_text,
+            track_id
+        )
+
+        if not isinstance(track, dict):
+            continue
+
+        artists = track.get("artists") or []
+
+        artist_names = []
+
+        for item in artists:
+
+            if (
+                isinstance(item, dict)
+                and item.get("name")
+            ):
+                artist_names.append(
+                    str(item["name"])
+                )
+
+        artist = ", ".join(
+            artist_names
+        )
+
+        title = (
+            track.get("title")
+            or ""
+        )
+
+        album = ""
+
+        actual_album_id = (
+            track.get("albumId")
+            or album_id
+        )
+
+        albums = track.get("albums") or []
+
+        if albums:
+
+            first_album = albums[0]
+
+            if isinstance(
+                first_album,
+                dict
+            ):
+
+                album = (
+                    first_album.get("title")
+                    or ""
+                )
+
+                actual_album_id = (
+                    first_album.get("id")
+                    or actual_album_id
+                )
+
+        duration = None
+
+        duration_ms = (
+            track.get("durationMs")
+        )
+
+        if duration_ms is not None:
+
+            try:
+                duration = (
+                    float(duration_ms)
+                    / 1000
+                )
+
+            except Exception:
+                pass
+
+        cover_uri = (
+            track.get("coverUri")
+            or track.get("ogImage")
+        )
+
+        cover_url = None
+
+        if cover_uri:
+
+            cover_url = str(
+                cover_uri
+            ).replace(
+                "%%",
+                "720x720"
+            )
+
+            if cover_url.startswith("//"):
+
+                cover_url = (
+                    "https:"
+                    + cover_url
+                )
+
+            elif not cover_url.startswith(
+                (
+                    "http://",
+                    "https://"
+                )
+            ):
+
+                cover_url = (
+                    "https://"
+                    + cover_url
+                )
+
+        print(
+            "Метаданные получены "
+            "непосредственно со страницы "
+            "Яндекс Музыки."
+        )
+
+        print(
+            f"Исполнитель: {artist}"
+        )
+
+        print(
+            f"Название: {title}"
+        )
+
+        print(
+            f"Альбом: "
+            f"{album or 'не определён'}"
+        )
+
+        print(
+            f"Длительность: "
+            f"{format_duration(duration)}"
+        )
+
+        print(
+            "Обложка: "
+            f"{'НАЙДЕНА' if cover_url else 'НЕ НАЙДЕНА'}"
+        )
+
+        if (
+            not artist
+            or not title
+            or duration is None
+        ):
+            print(
+                "HTML найден, но обязательные "
+                "поля трека отсутствуют."
+            )
+
+            continue
+
+        return {
+            "source": "yandex",
+            "artist": artist,
+            "title": title,
+            "album": album,
+            "duration": duration,
+            "cover_url": cover_url,
+            "track_id": track_id,
+            "album_id": (
+                str(actual_album_id)
+                if actual_album_id
+                else ""
+            )
+        }
+
+    print(
+        "Не удалось получить метаданные "
+        "Яндекс Музыки из HTML."
+    )
+
+    return None
+
+
 def get_yandex_music_info(url):
     status(
         "Получение информации из Яндекс Музыки..."
     )
 
-    try:
-        response = requests.get(
-            url,
-            headers=HEADERS,
-            timeout=TIMEOUT
-        )
-    except requests.RequestException as e:
+    parsed = parse_yandex_url(url)
+
+    if not parsed:
         print(
-            "Не удалось получить страницу "
+            "Не удалось определить ID трека "
             "Яндекс Музыки."
         )
-        print(
-            f"Ошибка: {e}"
-        )
         return None
+
+    track_id = parsed["track_id"]
+    album_id = parsed["album_id"]
+
+    # ========================================================
+    # 1. ОСНОВНОЙ API
+    # ========================================================
+
+    try:
+        response = requests.get(
+            f"https://api.music.yandex.net/tracks/{track_id}",
+            headers=YANDEX_HEADERS,
+            timeout=TIMEOUT
+        )
+
+    except requests.RequestException as exc:
+
+        print(
+            "Не удалось получить данные "
+            "Яндекс Музыки через API."
+        )
+
+        print(
+            f"Ошибка: {exc}"
+        )
+
+        print(
+            "Переход к получению данных "
+            "непосредственно со страницы..."
+        )
+
+        return _yandex_music_info_from_html(
+            track_id,
+            album_id
+        )
 
     if response.status_code != 200:
+
         print(
-            "Яндекс Музыка вернула HTTP "
-            f"{response.status_code}."
+            "Не удалось получить метаданные "
+            "трека через API."
         )
-        return None
 
-    text = response.text
-
-    state = extract_yandex_playlist_state(
-        text
-    )
-
-    tracks = state.get(
-        "tracks",
-        []
-    )
-
-    if not tracks:
         print(
-            "В HTML Яндекс Музыки "
-            "не найдены данные трека."
+            f"HTTP: {response.status_code}"
         )
-        return None
 
-    # Для обычной ссылки на трек
-    # определяем ID из URL.
-    parsed = parse_yandex_url(
-        url
+        print(
+            "Переход к получению данных "
+            "непосредственно со страницы..."
+        )
+
+        return _yandex_music_info_from_html(
+            track_id,
+            album_id
+        )
+
+    try:
+
+        data = response.json()
+
+    except Exception:
+
+        print(
+            "Не удалось обработать данные "
+            "Яндекс Музыки."
+        )
+
+        print(
+            "Переход к получению данных "
+            "непосредственно со страницы..."
+        )
+
+        return _yandex_music_info_from_html(
+            track_id,
+            album_id
+        )
+
+    result = data.get("result")
+
+    if isinstance(result, dict):
+
+        result = result.get(
+            "track",
+            result
+        )
+
+    elif isinstance(result, list):
+
+        result = (
+            result[0]
+            if result
+            else None
+        )
+
+    if not isinstance(result, dict):
+
+        print(
+            "API Яндекс Музыки не вернул "
+            "данные трека."
+        )
+
+        print(
+            "Переход к получению данных "
+            "непосредственно со страницы..."
+        )
+
+        return _yandex_music_info_from_html(
+            track_id,
+            album_id
+        )
+
+    track = result
+
+    artists = (
+        track.get("artists")
+        or []
     )
 
-    target_track_id = ""
+    artist = ", ".join(
+        str(x.get("name"))
+        for x in artists
+        if (
+            isinstance(x, dict)
+            and x.get("name")
+        )
+    )
 
-    if parsed:
-        target_track_id = str(
-            parsed.get(
-                "track_id"
-            )
+    title = (
+        track.get("title")
+        or ""
+    )
+
+    album = ""
+
+    albums = track.get("albums")
+
+    if (
+        isinstance(albums, list)
+        and albums
+        and isinstance(
+            albums[0],
+            dict
+        )
+    ):
+
+        album = (
+            albums[0].get("title")
             or ""
         )
 
-    selected_track = None
+        album_id = str(
+            albums[0].get("id")
+            or album_id
+        )
 
-    if target_track_id:
-        for track in tracks:
-            current_id = str(
-                track.get("id")
-                or track.get("realId")
-                or ""
+    duration = None
+
+    if track.get("durationMs") is not None:
+
+        try:
+
+            duration = (
+                float(
+                    track["durationMs"]
+                )
+                / 1000
             )
 
-            if current_id == target_track_id:
-                selected_track = track
-                break
+        except Exception:
+            pass
 
-    # Если ID из URL не найден,
-    # но HTML содержит ровно один трек,
-    # используем его.
-    if selected_track is None and len(tracks) == 1:
-        selected_track = tracks[0]
-
-    if selected_track is None:
-        print(
-            "Не удалось определить "
-            "нужный трек Яндекс Музыки."
-        )
-        return None
-
-    info = yandex_track_to_info(
-        selected_track
+    cover_uri = (
+        track.get("coverUri")
+        or track.get("ogImage")
     )
 
-    if not info:
-        print(
-            "Не удалось определить "
-            "метаданные трека Яндекс Музыки."
+    cover_url = None
+
+    if cover_uri:
+
+        cover_url = str(
+            cover_uri
+        ).replace(
+            "%%",
+            "720x720"
         )
-        return None
+
+        if cover_url.startswith("//"):
+
+            cover_url = (
+                "https:"
+                + cover_url
+            )
+
+        elif not cover_url.startswith(
+            (
+                "http://",
+                "https://"
+            )
+        ):
+
+            cover_url = (
+                "https://"
+                + cover_url
+            )
+
+    if (
+        not artist
+        or not title
+        or duration is None
+    ):
+
+        print(
+            "API получил неполные данные "
+            "трека."
+        )
+
+        print(
+            "Переход к получению данных "
+            "непосредственно со страницы..."
+        )
+
+        return _yandex_music_info_from_html(
+            track_id,
+            album_id
+        )
 
     print(
-        f"Исполнитель: {info['artist']}"
+        f"Исполнитель: {artist}"
     )
 
     print(
-        f"Название: {info['title']}"
+        f"Название: {title}"
     )
 
     print(
         f"Альбом: "
-        f"{info['album'] or 'не определён'}"
+        f"{album or 'не определён'}"
     )
 
     print(
         f"Длительность: "
-        f"{format_duration(info['duration'])}"
+        f"{format_duration(duration)}"
     )
 
     print(
         "Обложка: "
-        f"{'НАЙДЕНА' if info['cover_url'] else 'НЕ НАЙДЕНА'}"
+        f"{'НАЙДЕНА' if cover_url else 'НЕ НАЙДЕНА'}"
     )
 
-    print(
-        "Синхронизированный текст Яндекс: "
-        f"{'ДА' if info.get('has_sync_lyrics') else 'НЕТ'}"
-    )
+    return {
+        "source": "yandex",
+        "artist": artist,
+        "title": title,
+        "album": album,
+        "duration": duration,
+        "cover_url": cover_url,
+        "track_id": track_id,
+        "album_id": album_id
+    }
 
-    return info
 
 def is_youtube_age_error(error_text):
     if not error_text:
