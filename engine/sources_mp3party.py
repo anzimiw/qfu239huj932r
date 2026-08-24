@@ -1,6 +1,7 @@
 
 from sources_utils import candidate_text_score, is_duration_acceptable, get_duration
 
+
 # Censuru.net — MP3Party source
 # Логика MP3Party, вынесенная из downloader.py.
 #
