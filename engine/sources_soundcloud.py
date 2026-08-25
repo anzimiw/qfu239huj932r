@@ -43,7 +43,7 @@ SOUNDCLOUD_SEARCH_URL = (
 )
 
 
-SOUNDCLOUD_DURATION_TOLERANCE = 10.0
+SOUNDCLOUD_DURATION_TOLERANCE = 20.0
 
 SOUNDCLOUD_SEARCH_TIMEOUT = 15
 
@@ -470,7 +470,27 @@ def evaluate_soundcloud_candidate(
         )
 
 
-    requested_artist = norm(
+    def normalize_artist_confusables(value):
+        value = norm(value)
+
+        replacements = str.maketrans({
+            "a": "а",
+            "c": "с",
+            "e": "е",
+            "o": "о",
+            "p": "р",
+            "x": "х",
+            "y": "у",
+            "k": "к",
+            "m": "м",
+            "t": "т",
+            "b": "в",
+            "h": "н",
+        })
+
+        return value.translate(replacements)
+
+    requested_artist = normalize_artist_confusables(
         artist
     )
 
@@ -482,11 +502,11 @@ def evaluate_soundcloud_candidate(
         candidate_title
     )
 
-    candidate_artist_norm = norm(
+    candidate_artist_norm = normalize_artist_confusables(
         candidate_artist
     )
 
-    candidate_username_norm = norm(
+    candidate_username_norm = normalize_artist_confusables(
         candidate_username
     )
 
