@@ -295,7 +295,7 @@ def search_mp3tm(
         duration_penalty = 0
 
         if duration_difference is not None:
-            if duration_difference > 30:
+            if duration_difference > 20:
                 duration_penalty = 500
             elif duration_difference > 10:
                 duration_penalty = 100
