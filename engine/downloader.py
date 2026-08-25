@@ -884,10 +884,65 @@ def get_yandex_music_info(url):
         except Exception:
             pass
 
+    # ========================================================
+    # ОБЛОЖКА ЯНДЕКС МУЗЫКИ
+    #
+    # Основные поля coverUri / ogImage могут отсутствовать.
+    # В таком случае рабочий URI может находиться внутри:
+    #
+    # albums[0]
+    #   -> artists[0]
+    #      -> cover
+    #         -> uri
+    # ========================================================
+
     cover_uri = (
         track.get("coverUri")
         or track.get("ogImage")
     )
+
+    if not cover_uri:
+        track_albums = track.get("albums")
+
+        if (
+            isinstance(track_albums, list)
+            and track_albums
+            and isinstance(track_albums[0], dict)
+        ):
+            first_album = track_albums[0]
+
+            cover_uri = (
+                first_album.get("coverUri")
+                or first_album.get("ogImage")
+            )
+
+            if not cover_uri:
+                album_artists = (
+                    first_album.get("artists")
+                    or []
+                )
+
+                if (
+                    isinstance(album_artists, list)
+                    and album_artists
+                    and isinstance(
+                        album_artists[0],
+                        dict
+                    )
+                ):
+                    artist_cover = (
+                        album_artists[0].get("cover")
+                        or {}
+                    )
+
+                    if isinstance(
+                        artist_cover,
+                        dict
+                    ):
+                        cover_uri = (
+                            artist_cover.get("uri")
+                            or artist_cover.get("url")
+                        )
 
     cover_url = None
 
@@ -2413,6 +2468,223 @@ def process_lrc(
 
 # PLAYLIST
 
+
+def _decode_yandex_text(value):
+    """
+    Безопасное декодирование строк Яндекс Музыки.
+
+    Не прогоняет обычный UTF-8 Unicode через
+    unicode_escape, поскольку это портит кириллицу.
+
+    При этом корректно обрабатывает JSON-style
+    escape-последовательности вроде:
+        \u0410
+        \/
+        \"
+        \\
+
+    Обычный Unicode-текст возвращается без изменений.
+    """
+
+    if value is None:
+        return ""
+
+    value = str(value)
+
+    if "\\" not in value:
+        return value
+
+    try:
+        import json
+
+        return json.loads(
+            '"' + value.replace(
+                '"',
+                '\\"'
+            ) + '"'
+        )
+
+    except Exception:
+        pass
+
+    try:
+        return value.encode(
+            "utf-8"
+        ).decode(
+            "unicode_escape"
+        )
+
+    except Exception:
+        return value
+
+def extract_yandex_playlist_state(html):
+    if not html:
+        return {
+            "title": "Яндекс Музыка",
+            "tracks": []
+        }
+
+    title = "Яндекс Музыка"
+    tracks = {}
+
+    meta = re.search(
+        r'"op"\s*:\s*"replace"\s*,\s*"path"\s*:\s*"\\u002Fplaylist\\u002Fmeta"\s*,\s*"value"\s*:\s*\{(.*?)\}\s*,\s*\{',
+        html,
+        re.S
+    )
+
+    if meta:
+        m = re.search(
+            r'"title"\s*:\s*"((?:\\.|[^"\\])*)"',
+            meta.group(1)
+        )
+        if m:
+            title = _decode_yandex_text(
+                m.group(1)
+            )
+
+    pattern = re.compile(
+        r'"op"\s*:\s*"(?:add|replace)"\s*,\s*'
+        r'"path"\s*:\s*"\\u002Fplaylist\\u002Fitems\\u002F(\d+)"'
+        r'\s*,\s*"value"\s*:\s*\{',
+        re.S
+    )
+
+    matches = list(pattern.finditer(html))
+
+    for pos, match in enumerate(matches):
+        index = int(match.group(1))
+
+        start = match.start()
+        end = (
+            matches[pos + 1].start()
+            if pos + 1 < len(matches)
+            else min(len(html), start + 300000)
+        )
+
+        chunk = html[start:end]
+
+        id_match = re.search(
+            r'"id"\s*:\s*"(\d+)"',
+            chunk
+        )
+
+        if not id_match:
+            continue
+
+        track_id = id_match.group(1)
+
+        data_match = re.search(
+            r'"data"\s*:\s*\{(.*?)(?:\}\s*,\s*"loadingState"|"\s*,\s*"loadingState")',
+            chunk,
+            re.S
+        )
+
+        data = data_match.group(1) if data_match else chunk
+
+        album = re.search(
+            r'"albumId"\s*:\s*(\d+)',
+            data
+        )
+
+        title_match = re.search(
+            r'"title"\s*:\s*"((?:\\.|[^"\\])*)"',
+            data
+        )
+
+        duration = re.search(
+            r'"durationMs"\s*:\s*(\d+)',
+            data
+        )
+
+        cover = re.search(
+            r'"coverUri"\s*:\s*"((?:\\.|[^"\\])*)"',
+            data
+        )
+
+        artists = []
+
+        artists_match = re.search(
+            r'"artists"\s*:\s*\[(.*?)\]',
+            data,
+            re.S
+        )
+
+        if artists_match:
+            for artist in re.finditer(
+                r'"name"\s*:\s*"((?:\\.|[^"\\])*)"',
+                artists_match.group(1)
+            ):
+                name = artist.group(1)
+                name = _decode_yandex_text(
+                    name
+                )
+
+                if name and name not in artists:
+                    artists.append(name)
+
+        track_title = (
+            title_match.group(1)
+            if title_match
+            else ""
+        )
+
+        if track_title:
+            track_title = _decode_yandex_text(
+                track_title
+            )
+
+        cover_uri = (
+            cover.group(1)
+            if cover
+            else ""
+        )
+
+        duration_ms = (
+            int(duration.group(1))
+            if duration
+            else None
+        )
+
+        if index not in tracks:
+            tracks[index] = {
+                "id": track_id,
+                "realId": track_id,
+                "albumId": (
+                    album.group(1)
+                    if album
+                    else None
+                ),
+                "title": track_title,
+                "artist": ", ".join(artists),
+                "artists": artists,
+                "durationMs": duration_ms,
+                "duration": (
+                    duration_ms / 1000.0
+                    if duration_ms is not None
+                    else None
+                ),
+                "coverUri": cover_uri,
+                "cover_url": (
+                    "https://"
+                    + cover_uri.replace(
+                        "%%",
+                        "720x720"
+                    )
+                    if cover_uri
+                    else None
+                ),
+                "source": "yandex"
+            }
+
+    return {
+        "title": title,
+        "tracks": [
+            tracks[i]
+            for i in sorted(tracks)
+        ]
+    }
+
 def get_playlist_tracks(url):
     status(
         "Получение списка треков плейлиста..."
@@ -3215,7 +3487,7 @@ def find_youtube_fallback_url(
                 - target
             )
 
-            if difference > 30:
+            if difference > 20:
                 continue
 
         else:
@@ -3345,7 +3617,7 @@ def find_youtube_fallback_url(
                 - target
             )
 
-            if difference > 30:
+            if difference > 20:
                 print(
                     "YouTube fallback: "
                     "длительность кандидата "
