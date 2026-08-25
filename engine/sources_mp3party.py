@@ -59,7 +59,7 @@ HEADERS = {
 
 TIMEOUT = 20
 
-DURATION_TOLERANCE = 3.0
+DURATION_TOLERANCE = 20.0
 
 
 # ============================================================
