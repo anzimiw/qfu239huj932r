@@ -283,16 +283,164 @@ def telegram_request(method, params=None):
 # TELEGRAM HELPERS
 # ============================================================
 
+# ============================================================
+# STATUS MESSAGE STATE
+# ============================================================
+
+_STATUS_MESSAGES = {}
+_STATUS_LOCK = threading.Lock()
+
 def send_message(chat_id, text):
 
+    # --------------------------------------------------------
+    # Обычные пользовательские сообщения.
+    #
+    # Если сообщение содержит техническое исключение,
+    # не показываем его пользователю.
+    # Ошибка остаётся только в консоли.
+    # --------------------------------------------------------
+
+    technical_error_patterns = (
+        "TimeoutError:",
+        "ConnectionError:",
+        "ConnectionResetError:",
+        "ConnectionAbortedError:",
+        "ConnectionRefusedError:",
+        "socket.timeout",
+        "WinError 10060",
+        "WinError 10061",
+        "WinError 10054",
+        "Traceback (most recent call last)",
+    )
+
+    text_string = str(
+        text or ""
+    )
+
+    if any(
+        pattern in text_string
+        for pattern in technical_error_patterns
+    ):
+        print(
+            "Telegram: техническая ошибка "
+            "не отправлена пользователю."
+        )
+
+        return {
+            "ok": False,
+            "suppressed": True
+        }
+
+    # --------------------------------------------------------
+    # Статусное сообщение.
+    #
+    # Все последовательные сообщения обработки одного чата
+    # редактируют одно и то же сообщение.
+    # --------------------------------------------------------
+
+    try:
+
+        status_states = globals().setdefault(
+            "_STATUS_MESSAGES",
+            {}
+        )
+
+        status_lock = globals().get(
+            "_STATUS_LOCK"
+        )
+
+        if status_lock is None:
+            import threading
+
+            status_lock = threading.Lock()
+
+            globals()[
+                "_STATUS_LOCK"
+            ] = status_lock
+
+        with status_lock:
+
+            status_message_id = (
+                status_states.get(
+                    chat_id
+                )
+            )
+
+            if status_message_id:
+
+                try:
+
+                    result = edit_message(
+                        chat_id,
+                        status_message_id,
+                        text_string
+                    )
+
+                    if result.get("ok"):
+
+                        return result
+
+                except Exception as edit_error:
+
+                    print(
+                        "Telegram: не удалось "
+                        "отредактировать статус:"
+                    )
+
+                    print(
+                        f"{type(edit_error).__name__}: "
+                        f"{edit_error}"
+                    )
+
+                    status_states.pop(
+                        chat_id,
+                        None
+                    )
+
+            result = telegram_request(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": text_string
+                }
+            )
+
+            if result.get("ok"):
+
+                message = result.get(
+                    "result",
+                    {}
+                )
+
+                message_id = message.get(
+                    "message_id"
+                )
+
+                if message_id:
+
+                    status_states[
+                        chat_id
+                    ] = message_id
+
+            return result
+
+    except Exception:
+
+        raise
+
+
+
+
+def edit_message(chat_id, message_id, text):
+
     return telegram_request(
-        "sendMessage",
+        "editMessageText",
         {
             "chat_id": chat_id,
+            "message_id": message_id,
             "text": text
         }
     )
-
 
 def telegram_upload_file(
     method,
@@ -451,21 +599,54 @@ def telegram_upload_file(
         f"{len(body):,} байт"
     )
 
+    print()
+    print("Telegram upload: TCP connection...")
+
+    upload_connect_start = time.time()
+
     sock = socket.create_connection(
         (
             TELEGRAM_IP,
             TELEGRAM_PORT
         ),
-        timeout=60
+        timeout=120
+    )
+
+    upload_connect_elapsed = (
+        time.time() - upload_connect_start
+    )
+
+    print(
+        "Telegram upload: TCP connection OK "
+        f"({upload_connect_elapsed:.2f} сек.)"
     )
 
     try:
+
+        print(
+            "Telegram upload: TLS handshake..."
+        )
+
+        tls_start = time.time()
 
         context = ssl.create_default_context()
 
         tls_sock = context.wrap_socket(
             sock,
             server_hostname=TELEGRAM_HOST
+        )
+        tls_sock.settimeout(180)
+
+        tls_elapsed = (
+            time.time() - tls_start
+        )
+
+        print(
+            "Telegram upload: TLS OK "
+            f"({tls_elapsed:.2f} сек.)"
+        )
+        print(
+            "Telegram upload: socket timeout = 180 сек."
         )
 
         try:
@@ -487,12 +668,46 @@ def telegram_upload_file(
 
             start_time = time.time()
 
+            print(
+                "Telegram upload: "
+                "отправка HTTP headers..."
+            )
+
+            headers_start = time.time()
+
             tls_sock.sendall(
                 request
             )
 
+            headers_elapsed = (
+                time.time() - headers_start
+            )
+
+            print(
+                "Telegram upload: "
+                "HTTP headers отправлены "
+                f"({headers_elapsed:.2f} сек.)"
+            )
+
+            print(
+                "Telegram upload: "
+                "отправка multipart/MP3..."
+            )
+
+            body_start = time.time()
+
             tls_sock.sendall(
                 body
+            )
+
+            body_elapsed = (
+                time.time() - body_start
+            )
+
+            print(
+                "Telegram upload: "
+                "multipart/MP3 отправлен "
+                f"({body_elapsed:.2f} сек.)"
             )
 
             elapsed = (
@@ -506,6 +721,13 @@ def telegram_upload_file(
 
             response = b""
 
+            print(
+                "Telegram upload: "
+                "ожидание HTTP-ответа Telegram..."
+            )
+
+            recv_start = time.time()
+
             while True:
 
                 chunk = tls_sock.recv(
@@ -516,6 +738,22 @@ def telegram_upload_file(
                     break
 
                 response += chunk
+
+                print(
+                    "Telegram upload: "
+                    f"получено ещё {len(chunk):,} байт."
+                )
+
+            recv_elapsed = (
+                time.time() - recv_start
+            )
+
+            print(
+                "Telegram upload: "
+                f"HTTP response получен "
+                f"({recv_elapsed:.2f} сек., "
+                f"{len(response):,} байт)"
+            )
 
         finally:
 
@@ -668,6 +906,7 @@ def process_yandex_playlist(chat_id, url):
         )
 
         if not playlist:
+
             send_message(
                 chat_id,
                 "Не удалось получить список треков Яндекс-плейлиста."
@@ -675,6 +914,14 @@ def process_yandex_playlist(chat_id, url):
 
             print(
                 "ОШИБКА: get_playlist_tracks() вернул пустой результат."
+            )
+
+            globals().get(
+                "_STATUS_MESSAGES",
+                {}
+            ).pop(
+                chat_id,
+                None
             )
 
             return
@@ -705,14 +952,24 @@ def process_yandex_playlist(chat_id, url):
                 "В плейлисте не найдено треков."
             )
 
+            globals().get(
+                "_STATUS_MESSAGES",
+                {}
+            ).pop(
+                chat_id,
+                None
+            )
+
             return
+
+        total_tracks = len(tracks)
 
         send_message(
             chat_id,
             (
                 f"Плейлист найден.\n\n"
                 f"{playlist_title}\n"
-                f"Треков: {len(tracks)}\n\n"
+                f"Треков: {total_tracks}\n\n"
                 f"Начинаю обработку..."
             )
         )
@@ -728,7 +985,7 @@ def process_yandex_playlist(chat_id, url):
             print()
             print("=" * 70)
             print(
-                f"ПЛЕЙЛИСТ: ТРЕК {index}/{len(tracks)}"
+                f"ПЛЕЙЛИСТ: ТРЕК {index}/{total_tracks}"
             )
             print("=" * 70)
             print()
@@ -740,13 +997,26 @@ def process_yandex_playlist(chat_id, url):
 
                 success = process_track(
                     chat_id,
-                    track_url
+                    track_url,
+                    playlist_progress=(
+                        index,
+                        total_tracks
+                    )
                 )
 
                 if success:
                     successful += 1
                 else:
                     failed += 1
+
+                    send_message(
+                        chat_id,
+                        (
+                            f"Трек {index}/{total_tracks} "
+                            f"не обработан.\n\n"
+                            f"Продолжаю плейлист..."
+                        )
+                    )
 
             except Exception as track_error:
 
@@ -767,27 +1037,37 @@ def process_yandex_playlist(chat_id, url):
                     send_message(
                         chat_id,
                         (
-                            f"Ошибка обработки трека "
-                            f"{index}/{len(tracks)}.\n\n"
-                            f"{type(track_error).__name__}: "
-                            f"{track_error}"
+                            f"Трек {index}/{total_tracks} "
+                            f"не обработан.\n\n"
+                            f"Продолжаю плейлист..."
                         )
                     )
 
-                except Exception:
-                    pass
+                except Exception as telegram_error:
+
+                    print(
+                        "Не удалось обновить статус:"
+                    )
+
+                    print(
+                        f"{type(telegram_error).__name__}: "
+                        f"{telegram_error}"
+                    )
 
         print()
         print("=" * 70)
         print("ПЛЕЙЛИСТ ЗАВЕРШЁН")
         print("=" * 70)
         print()
+
         print(
-            f"Всего треков: {len(tracks)}"
+            f"Всего треков: {total_tracks}"
         )
+
         print(
             f"Успешно: {successful}"
         )
+
         print(
             f"Ошибок: {failed}"
         )
@@ -797,10 +1077,18 @@ def process_yandex_playlist(chat_id, url):
             (
                 f"Обработка плейлиста завершена.\n\n"
                 f"{playlist_title}\n\n"
-                f"Всего треков: {len(tracks)}\n"
+                f"Всего треков: {total_tracks}\n"
                 f"Успешно: {successful}\n"
                 f"Ошибок: {failed}"
             )
+        )
+
+        globals().get(
+            "_STATUS_MESSAGES",
+            {}
+        ).pop(
+            chat_id,
+            None
         )
 
     except Exception as e:
@@ -819,18 +1107,13 @@ def process_yandex_playlist(chat_id, url):
 
             send_message(
                 chat_id,
-                (
-                    "Произошла ошибка при обработке "
-                    "плейлиста.\n\n"
-                    f"{type(e).__name__}: {e}"
-                )
+                "Произошла ошибка при обработке плейлиста."
             )
 
         except Exception as telegram_error:
 
             print(
-                "Не удалось отправить сообщение "
-                "об ошибке:"
+                "Не удалось отправить сообщение об ошибке:"
             )
 
             print(
@@ -838,10 +1121,300 @@ def process_yandex_playlist(chat_id, url):
                 f"{telegram_error}"
             )
 
+        globals().get(
+            "_STATUS_MESSAGES",
+            {}
+        ).pop(
+            chat_id,
+            None
+        )
 
-def process_track(chat_id, url):
+
+# ============================================================
+# ОБРАБОТКА ПЛЕЙЛИСТА YOUTUBE MUSIC
+# ============================================================
+
+def process_youtube_playlist(chat_id, url):
 
     try:
+
+        print()
+        print("=" * 70)
+        print("НАЧАЛО ОБРАБОТКИ YOUTUBE MUSIC ПЛЕЙЛИСТА")
+        print("=" * 70)
+        print()
+        print(f"URL плейлиста: {url}")
+
+        send_message(
+            chat_id,
+            "Получаю список треков YouTube Music..."
+        )
+
+        print()
+        print(
+            "YouTube Music: получение списка треков "
+            "через downloader.py..."
+        )
+
+        playlist = downloader.get_youtube_playlist_tracks(
+            url
+        )
+
+        if not playlist:
+
+            send_message(
+                chat_id,
+                "Не удалось получить список треков YouTube Music."
+            )
+
+            print(
+                "ОШИБКА: get_youtube_playlist_tracks() "
+                "вернул пустой результат."
+            )
+
+            globals().get(
+                "_STATUS_MESSAGES",
+                {}
+            ).pop(
+                chat_id,
+                None
+            )
+
+            return
+
+        playlist_title = (
+            playlist.get("title")
+            or "YouTube Music"
+        )
+
+        tracks = (
+            playlist.get("tracks")
+            or []
+        )
+
+        print()
+        print(
+            f"Название плейлиста: {playlist_title}"
+        )
+
+        print(
+            f"Найдено треков: {len(tracks)}"
+        )
+
+        if not tracks:
+
+            send_message(
+                chat_id,
+                "В YouTube Music плейлисте не найдено треков."
+            )
+
+            globals().get(
+                "_STATUS_MESSAGES",
+                {}
+            ).pop(
+                chat_id,
+                None
+            )
+
+            return
+
+        total_tracks = len(tracks)
+
+        send_message(
+            chat_id,
+            (
+                f"Плейлист найден.\n\n"
+                f"{playlist_title}\n"
+                f"Треков: {total_tracks}\n\n"
+                f"Начинаю обработку..."
+            )
+        )
+
+        successful = 0
+        failed = 0
+
+        for index, track_url in enumerate(
+            tracks,
+            1
+        ):
+
+            print()
+            print("=" * 70)
+            print(
+                f"YOUTUBE MUSIC: ТРЕК "
+                f"{index}/{total_tracks}"
+            )
+            print("=" * 70)
+            print()
+            print(
+                f"URL трека: {track_url}"
+            )
+
+            try:
+
+                success = process_track(
+                    chat_id,
+                    track_url,
+                    playlist_progress=(
+                        index,
+                        total_tracks
+                    )
+                )
+
+                if success:
+
+                    successful += 1
+
+                else:
+
+                    failed += 1
+
+                    send_message(
+                        chat_id,
+                        (
+                            f"Трек {index}/{total_tracks} "
+                            f"не обработан.\n\n"
+                            f"Продолжаю плейлист..."
+                        )
+                    )
+
+            except Exception as track_error:
+
+                failed += 1
+
+                print()
+                print(
+                    "ОШИБКА ТРЕКА YOUTUBE MUSIC ПЛЕЙЛИСТА:"
+                )
+
+                print(
+                    f"{type(track_error).__name__}: "
+                    f"{track_error}"
+                )
+
+                try:
+
+                    send_message(
+                        chat_id,
+                        (
+                            f"Трек {index}/{total_tracks} "
+                            f"не обработан.\n\n"
+                            f"Продолжаю плейлист..."
+                        )
+                    )
+
+                except Exception as telegram_error:
+
+                    print(
+                        "Не удалось обновить статус:"
+                    )
+
+                    print(
+                        f"{type(telegram_error).__name__}: "
+                        f"{telegram_error}"
+                    )
+
+        print()
+        print("=" * 70)
+        print("YOUTUBE MUSIC ПЛЕЙЛИСТ ЗАВЕРШЁН")
+        print("=" * 70)
+        print()
+
+        print(
+            f"Название: {playlist_title}"
+        )
+
+        print(
+            f"Всего треков: {total_tracks}"
+        )
+
+        print(
+            f"Успешно: {successful}"
+        )
+
+        print(
+            f"Ошибок: {failed}"
+        )
+
+        send_message(
+            chat_id,
+            (
+                f"Обработка плейлиста завершена.\n\n"
+                f"{playlist_title}\n\n"
+                f"Всего треков: {total_tracks}\n"
+                f"Успешно: {successful}\n"
+                f"Ошибок: {failed}"
+            )
+        )
+
+        globals().get(
+            "_STATUS_MESSAGES",
+            {}
+        ).pop(
+            chat_id,
+            None
+        )
+
+    except Exception as e:
+
+        print()
+        print("=" * 70)
+        print("ОШИБКА ОБРАБОТКИ YOUTUBE MUSIC ПЛЕЙЛИСТА")
+        print("=" * 70)
+        print()
+
+        print(
+            f"{type(e).__name__}: {e}"
+        )
+
+        try:
+
+            send_message(
+                chat_id,
+                "Произошла ошибка при обработке YouTube Music плейлиста."
+            )
+
+        except Exception as telegram_error:
+
+            print(
+                "Не удалось отправить сообщение об ошибке:"
+            )
+
+            print(
+                f"{type(telegram_error).__name__}: "
+                f"{telegram_error}"
+            )
+
+        globals().get(
+            "_STATUS_MESSAGES",
+            {}
+        ).pop(
+            chat_id,
+            None
+        )
+
+
+def process_track(chat_id, url, playlist_progress=None):
+
+    try:
+
+        # ----------------------------------------------------
+        # Новая одиночная ссылка должна получить новое
+        # редактируемое статусное сообщение.
+        #
+        # Для трека внутри плейлиста существующее сообщение
+        # сохраняем.
+        # ----------------------------------------------------
+
+        if not playlist_progress:
+
+            globals().get(
+                "_STATUS_MESSAGES",
+                {}
+            ).pop(
+                chat_id,
+                None
+            )
 
         print()
         print("=" * 70)
@@ -850,10 +1423,22 @@ def process_track(chat_id, url):
         print()
         print(f"URL: {url}")
 
-        send_message(
-            chat_id,
-            "Получаю информацию о треке..."
-        )
+        if playlist_progress:
+            current_index, total_tracks = playlist_progress
+
+            send_message(
+                chat_id,
+                (
+                    f"Обработка трека "
+                    f"{current_index}/{total_tracks}...\n\n"
+                    f"Получаю информацию о треке..."
+                )
+            )
+        else:
+            send_message(
+                chat_id,
+                "Получаю информацию о треке..."
+            )
 
         # ----------------------------------------------------
         # 1. Получение информации
@@ -861,10 +1446,6 @@ def process_track(chat_id, url):
 
         print()
         print("Получение информации из downloader.py...")
-
-        # ------------------------------------------------
-        # Определяем источник по URL
-        # ------------------------------------------------
 
         if downloader.is_yandex_music_url(url):
 
@@ -893,8 +1474,20 @@ def process_track(chat_id, url):
                 "Не удалось получить информацию о треке."
             )
 
-            print("ОШИБКА: get_youtube_music_info() вернул пустой результат.")
-            return
+            print(
+                "ОШИБКА: получение информации вернуло "
+                "пустой результат."
+            )
+
+            globals().get(
+                "_STATUS_MESSAGES",
+                {}
+            ).pop(
+                chat_id,
+                None
+            )
+
+            return False
 
         print()
         print("Информация получена:")
@@ -932,22 +1525,72 @@ def process_track(chat_id, url):
                 "Не удалось определить исполнителя, название или длительность."
             )
 
-            print("ОШИБКА: неполные метаданные.")
-            return
+            print(
+                "ОШИБКА: неполные метаданные."
+            )
+
+            globals().get(
+                "_STATUS_MESSAGES",
+                {}
+            ).pop(
+                chat_id,
+                None
+            )
+
+            return False
+
+        # ----------------------------------------------------
+        # Формат длительности: MM:SS
+        # ----------------------------------------------------
+
+        try:
+
+            duration_seconds = int(
+                float(duration)
+            )
+
+            minutes = duration_seconds // 60
+            seconds = duration_seconds % 60
+
+            duration_text = (
+                f"{minutes}:{seconds:02d}"
+            )
+
+        except Exception:
+
+            duration_text = str(
+                duration
+            )
 
         # ----------------------------------------------------
         # 2. Сообщение пользователю
         # ----------------------------------------------------
 
-        send_message(
-            chat_id,
-            (
+        if playlist_progress:
+
+            current_index, total_tracks = playlist_progress
+
+            status_text = (
+                f"Обработка трека "
+                f"{current_index}/{total_tracks}\n\n"
+                f"{artist} — {title}\n"
+                f"Длительность: {duration_text}\n\n"
+                f"Начинаю поиск аудиофайла..."
+            )
+
+        else:
+
+            status_text = (
                 f"Трек найден:\n\n"
                 f"Исполнитель: {artist}\n"
                 f"Название: {title}\n"
-                f"Длительность: {duration} сек.\n\n"
+                f"Длительность: {duration_text}\n\n"
                 f"Начинаю поиск аудиофайла..."
             )
+
+        send_message(
+            chat_id,
+            status_text
         )
 
         # ----------------------------------------------------
@@ -975,10 +1618,21 @@ def process_track(chat_id, url):
 
             send_message(
                 chat_id,
-                "Не удалось скачать аудиофайл."
+                (
+                    "Не удалось скачать аудиофайл.\n\n"
+                    f"{artist} — {title}"
+                )
             )
 
-            return
+            globals().get(
+                "_STATUS_MESSAGES",
+                {}
+            ).pop(
+                chat_id,
+                None
+            )
+
+            return False
 
         # ----------------------------------------------------
         # 4. Проверка файла
@@ -997,7 +1651,15 @@ def process_track(chat_id, url):
                 f"Файл не найден: {file_path}"
             )
 
-            return
+            globals().get(
+                "_STATUS_MESSAGES",
+                {}
+            ).pop(
+                chat_id,
+                None
+            )
+
+            return False
 
         file_size = os.path.getsize(
             file_path
@@ -1028,9 +1690,11 @@ def process_track(chat_id, url):
         # ----------------------------------------------------
 
         try:
+
             from mutagen.id3 import ID3
 
             tags = ID3(file_path)
+
             apic_count = len(
                 tags.getall("APIC:")
             )
@@ -1055,18 +1719,20 @@ def process_track(chat_id, url):
                 cover_check_error
             )
 
+        # ----------------------------------------------------
+        # Статус перед отправкой MP3
+        # ----------------------------------------------------
+
         send_message(
             chat_id,
             (
                 f"Трек скачан.\n\n"
-                f"{artist} — {title}\n\n"
-                f"Размер MP3: {file_size:,} байт\n\n"
-                f"Файл:\n{os.path.basename(file_path)}"
+                f"{artist} — {title}"
             )
         )
 
         print()
-        print("ЭТАП УСПЕШНО ЗАВЕРШЁН.")
+        print("ЭТАП СКАЧИВАНИЯ УСПЕШНО ЗАВЕРШЁН.")
 
         # ----------------------------------------------------
         # Отправка MP3 в Telegram
@@ -1075,14 +1741,9 @@ def process_track(chat_id, url):
         print()
         print("Отправка MP3 в Telegram...")
 
-        caption = (
-            f"{artist} — {title}"
-        )
-
         upload_result = send_audio(
             chat_id,
-            file_path,
-            caption=caption
+            file_path
         )
 
         if upload_result.get("ok"):
@@ -1091,23 +1752,41 @@ def process_track(chat_id, url):
                 "MP3 успешно отправлен в Telegram."
             )
 
-        else:
-
-            print(
-                "Ошибка отправки MP3:"
-            )
-
-            print(
-                upload_result
-            )
-
-            send_message(
+            globals().get(
+                "_STATUS_MESSAGES",
+                {}
+            ).pop(
                 chat_id,
-                (
-                    "Трек скачан, но Telegram "
-                    "не принял MP3 при отправке."
-                )
+                None
             )
+
+            return True
+
+        print(
+            "Ошибка отправки MP3:"
+        )
+
+        print(
+            upload_result
+        )
+
+        send_message(
+            chat_id,
+            (
+                "Трек скачан, но Telegram "
+                "не принял MP3 при отправке."
+            )
+        )
+
+        globals().get(
+            "_STATUS_MESSAGES",
+            {}
+        ).pop(
+            chat_id,
+            None
+        )
+
+        return False
 
     except Exception as e:
 
@@ -1116,6 +1795,7 @@ def process_track(chat_id, url):
         print("ОШИБКА ОБРАБОТКИ ТРЕКА")
         print("=" * 70)
         print()
+
         print(
             f"{type(e).__name__}: {e}"
         )
@@ -1124,10 +1804,7 @@ def process_track(chat_id, url):
 
             send_message(
                 chat_id,
-                (
-                    "Произошла ошибка при обработке трека.\n\n"
-                    f"{type(e).__name__}: {e}"
-                )
+                "Произошла ошибка при обработке трека."
             )
 
         except Exception as telegram_error:
@@ -1141,6 +1818,15 @@ def process_track(chat_id, url):
                 f"{telegram_error}"
             )
 
+        globals().get(
+            "_STATUS_MESSAGES",
+            {}
+        ).pop(
+            chat_id,
+            None
+        )
+
+        return False
 
 # ============================================================
 # START
@@ -1359,7 +2045,7 @@ while True:
                     # Текущую обработку YouTube-плейлистов
                     # пока не меняем.
                     thread = threading.Thread(
-                        target=process_track,
+                        target=process_youtube_playlist,
                         args=(
                             chat_id,
                             text
