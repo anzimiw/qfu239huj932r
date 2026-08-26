@@ -49,7 +49,7 @@ SOUNDCLOUD_SEARCH_TIMEOUT = 15
 
 SOUNDCLOUD_DOWNLOAD_TIMEOUT = 90
 
-SOUNDCLOUD_SEARCH_RESULTS = 15
+SOUNDCLOUD_SEARCH_RESULTS = 50
 
 SOUNDCLOUD_CLIENT_ID_TIMEOUT = 15
 
@@ -2041,12 +2041,462 @@ def search_soundcloud(
         "alternatives": alternatives,
         }
 
+    # ========================================================
+    # SOUNDCLOUD_TITLE_ONLY_FALLBACK_V1
+    # ========================================================
+    #
+    # Четыре основных этапа выше НЕ изменяются.
+    #
+    # Этот этап запускается только если обычный каскад
+    # не дал подходящего кандидата.
+    #
+    # Причина:
+    # SoundCloud Search API иногда не возвращает нужный
+    # трек по запросу "исполнитель + название", даже когда
+    # сам трек существует.
+    #
+    # Пример:
+    #     пазнякс, OG Buda + блэкпинк
+    #
+    # При title-only поиске:
+    #     блэкпинк
+    #
+    # SoundCloud может вернуть нужные загрузки.
+    # ========================================================
+
+    print()
+    print(
+        "-" * 60
+    )
+
+    print(
+        "SoundCloud: FALLBACK TITLE-ONLY"
+    )
+
+    print(
+        "SoundCloud: обычные 4 этапа "
+        "не дали подходящего кандидата."
+    )
+
+    title_fallback_queries = []
+
+    # Основной вариант: очищенное название без feat.
+    if cleaned_base_title:
+        title_fallback_queries.append(
+            cleaned_base_title
+        )
+
+    # Второй вариант: исходное название без feat.
+    if (
+        original_base_title
+        and original_base_title
+        not in title_fallback_queries
+    ):
+        title_fallback_queries.append(
+            original_base_title
+        )
+
+    # На случай слишком агрессивной очистки.
+    if (
+        cleaned_query_title
+        and cleaned_query_title
+        not in title_fallback_queries
+    ):
+        title_fallback_queries.append(
+            cleaned_query_title
+        )
+
+    title_fallback_candidates = []
+
+    for title_query in title_fallback_queries:
+
+        print()
+        print(
+            "SoundCloud: TITLE-ONLY запрос: "
+            f"{title_query}"
+        )
+
+        print(
+            "SoundCloud: максимум результатов: "
+            f"{SOUNDCLOUD_SEARCH_RESULTS}"
+        )
+
+        try:
+
+            title_collection = (
+                fetch_soundcloud_results(
+                    title_query,
+                    client_id
+                )
+            )
+
+        except Exception as error:
+
+            print(
+                "SoundCloud: TITLE-ONLY ошибка запроса: "
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
+
+            continue
+
+        if not isinstance(
+            title_collection,
+            list
+        ):
+            title_collection = []
+
+        print(
+            "SoundCloud: TITLE-ONLY получено "
+            f"результатов: {len(title_collection)}"
+        )
+
+        for title_candidate in title_collection:
+
+            candidate_title = str(
+                title_candidate.get("title")
+                or ""
+            ).strip()
+
+            candidate_url = (
+                title_candidate.get(
+                    "permalink_url"
+                )
+                or title_candidate.get(
+                    "uri"
+                )
+                or ""
+            )
+
+            if not candidate_title or not candidate_url:
+                continue
+
+            candidate_title_ratio = (
+                title_similarity(
+                    candidate_title,
+                    original_query_title
+                )
+            )
+
+            candidate_base_title_ratio = (
+                title_similarity(
+                    candidate_title,
+                    cleaned_base_title
+                )
+                if cleaned_base_title
+                else 0.0
+            )
+
+            title_ratio = max(
+                candidate_title_ratio,
+                candidate_base_title_ratio
+            )
+
+            # ------------------------------------------------
+            # Сначала пробуем существующий scoring.
+            # ------------------------------------------------
+
+            evaluated = None
+
+            try:
+
+                evaluated = (
+                    evaluate_soundcloud_candidate(
+                        title_candidate,
+                        requested_artist,
+                        requested_title,
+                        duration
+                    )
+                )
+
+            except Exception as error:
+
+                print(
+                    "SoundCloud: TITLE-ONLY evaluator "
+                    "ошибка: "
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
+
+            if evaluated:
+
+                evaluated["search_stage"] = 5
+                evaluated["search_query"] = title_query
+                evaluated["title_only_fallback"] = True
+
+                title_fallback_candidates.append(
+                    evaluated
+                )
+
+                continue
+
+            # ------------------------------------------------
+            # Если штатный evaluator отклонил результат,
+            # используем осторожный title-only критерий.
+            #
+            # Важное условие:
+            # название должно быть действительно похоже.
+            # ------------------------------------------------
+
+            if title_ratio < 0.82:
+                continue
+
+            if not duration_is_reasonable(
+                title_candidate.get("duration"),
+                duration
+            ):
+                continue
+
+            candidate_artist = (
+                get_candidate_artist(
+                    title_candidate
+                )
+            )
+
+            # Score специально ниже exact/high-confidence
+            # совпадений обычного evaluator.
+            #
+            # Это fallback, а не замена штатному scoring.
+            fallback_score = (
+                500.0
+                + title_ratio * 100.0
+            )
+
+            title_fallback_candidates.append({
+                "candidate": title_candidate,
+                "score": fallback_score,
+                "title_ratio": title_ratio,
+                "artist_ratio": 0.0,
+                "search_stage": 5,
+                "search_query": title_query,
+                "title_only_fallback": True,
+            })
+
+    # --------------------------------------------------------
+    # Удаляем дубликаты.
+    # --------------------------------------------------------
+
+    fallback_unique = {}
+
+    for item in title_fallback_candidates:
+
+        candidate = item.get(
+            "candidate",
+            {}
+        )
+
+        candidate_id = (
+            candidate.get("id")
+            or candidate.get("permalink_url")
+            or candidate.get("uri")
+            or candidate.get("title")
+        )
+
+        previous = fallback_unique.get(
+            candidate_id
+        )
+
+        if (
+            previous is None
+            or item["score"]
+            > previous["score"]
+        ):
+            fallback_unique[
+                candidate_id
+            ] = item
+
+    title_fallback_candidates = list(
+        fallback_unique.values()
+    )
+
+    title_fallback_candidates.sort(
+        key=lambda item: item["score"],
+        reverse=True
+    )
+
+    print()
+    print(
+        "SoundCloud: TITLE-ONLY подходящих "
+        "кандидатов: "
+        f"{len(title_fallback_candidates)}"
+    )
+
+    if title_fallback_candidates:
+
+        best = title_fallback_candidates[0]
+
+        candidate = best.get(
+            "candidate",
+            {}
+        )
+
+        candidate_title = str(
+            candidate.get("title")
+            or ""
+        ).strip()
+
+        candidate_artist = (
+            get_candidate_artist(
+                candidate
+            )
+        )
+
+        candidate_url = (
+            get_candidate_url(
+                candidate
+            )
+        )
+
+        if candidate_url:
+
+            print()
+            print(
+                "SoundCloud: TITLE-ONLY "
+                "КАНДИДАТ НАЙДЕН."
+            )
+
+            print(
+                "SoundCloud: этап: 5/5"
+            )
+
+            print(
+                "SoundCloud: запрос: "
+                f"{best.get('search_query', '')}"
+            )
+
+            print(
+                "SoundCloud: score: "
+                f"{best['score']:.1f}"
+            )
+
+            print(
+                "SoundCloud: название кандидата: "
+                f"{candidate_title}"
+            )
+
+            print(
+                "SoundCloud: исполнитель кандидата: "
+                f"{candidate_artist}"
+            )
+
+            print(
+                "SoundCloud: URL: "
+                f"{candidate_url}"
+            )
+
+            print(
+                "SoundCloud: используем "
+                "TITLE-ONLY fallback."
+            )
+
+            alternatives = []
+
+            for alternative_item in (
+                title_fallback_candidates[1:5]
+            ):
+
+                alternative_candidate = (
+                    alternative_item.get(
+                        "candidate",
+                        {}
+                    )
+                )
+
+                alternative_url = (
+                    get_candidate_url(
+                        alternative_candidate
+                    )
+                )
+
+                if not alternative_url:
+                    continue
+
+                alternative_title = str(
+                    alternative_candidate.get(
+                        "title"
+                    )
+                    or ""
+                ).strip()
+
+                alternative_artist = (
+                    get_candidate_artist(
+                        alternative_candidate
+                    )
+                )
+
+                alternative_title_ratio = (
+                    alternative_item.get(
+                        "title_ratio",
+                        0.0
+                    )
+                )
+
+                alternatives.append({
+                    "url": alternative_url,
+                    "title": alternative_title,
+                    "artist": alternative_artist,
+                    "duration": alternative_candidate.get(
+                        "duration"
+                    ),
+                    "score": alternative_item[
+                        "score"
+                    ],
+                    "candidate": alternative_candidate,
+                    "search_stage": 5,
+                    "search_query": alternative_item.get(
+                        "search_query",
+                        ""
+                    ),
+                    "exact_match": (
+                        alternative_title_ratio >= 0.98
+                    ),
+                    "title_only_fallback": True,
+                })
+
+            return {
+                "url": candidate_url,
+                "title": candidate_title,
+                "artist": candidate_artist,
+                "duration": candidate.get(
+                    "duration"
+                ),
+                "score": best["score"],
+                "candidate": candidate,
+                "search_stage": 5,
+                "search_query": best.get(
+                    "search_query",
+                    ""
+                ),
+                "title_only_fallback": True,
+                "exact_match": (
+                    best.get(
+                        "title_ratio",
+                        0.0
+                    ) >= 0.98
+                    and best.get(
+                        "artist_ratio",
+                        0.0
+                    ) >= 1.0
+                ),
+                "alternatives": alternatives,
+            }
+
+    print()
+    print(
+        "SoundCloud: TITLE-ONLY fallback "
+        "не дал подходящего кандидата."
+    )
+
+    # ========================================================
+    # END SOUNDCLOUD_TITLE_ONLY_FALLBACK_V1
+    # ========================================================
+
     print()
 
     print(
         "SoundCloud: ни один из "
-        "4 этапов поиска не дал "
-        "подходящего трека."
+        "4 основных этапов + TITLE-ONLY "
+        "не дал подходящего трека."
     )
 
     return None
