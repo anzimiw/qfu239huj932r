@@ -211,6 +211,23 @@ def extract_embedded_cover(mp3_path):
 
 def telegram_request(method, params=None):
 
+    # ========================================================
+    # TELEGRAM_API_RETRY_V1
+    #
+    # Один Telegram API-запрос выполняется максимум RETRIES раз.
+    #
+    # Retry охватывает весь цикл:
+    # TCP -> TLS -> HTTP -> получение ответа.
+    #
+    # Это защищает sendMessage / editMessageText / getUpdates
+    # от кратковременных сетевых WinError 10060.
+    #
+    # POLL_TIMEOUT не изменяется.
+    # ========================================================
+
+    TELEGRAM_API_RETRIES = 3
+    TELEGRAM_API_RETRY_DELAY = 3
+
     if params is None:
         params = {}
 
@@ -224,223 +241,148 @@ def telegram_request(method, params=None):
 
         path += "?" + query
 
-    sock = socket.create_connection(
-        (TELEGRAM_IP, TELEGRAM_PORT),
-        timeout=POLL_TIMEOUT + 10
-    )
+    last_error = None
 
-    context = ssl.create_default_context()
-
-    tls_sock = context.wrap_socket(
-        sock,
-        server_hostname=TELEGRAM_HOST
-    )
-
-    request = (
-        f"GET {path} HTTP/1.1\r\n"
-        f"Host: {TELEGRAM_HOST}\r\n"
-        f"User-Agent: CENSURU.NET-Bot/1.0\r\n"
-        f"Connection: close\r\n"
-        f"\r\n"
-    )
-
-    tls_sock.sendall(
-        request.encode("ascii")
-    )
-
-    response = b""
-
-    while True:
-
-        chunk = tls_sock.recv(8192)
-
-        if not chunk:
-            break
-
-        response += chunk
-
-    tls_sock.close()
-
-    if b"\r\n\r\n" not in response:
-        raise RuntimeError(
-            "Telegram вернул некорректный HTTP-ответ."
-        )
-
-    header, body = response.split(
-        b"\r\n\r\n",
-        1
-    )
-
-    return json.loads(
-        body.decode(
-            "utf-8",
-            errors="replace"
-        )
-    )
-
-
-# ============================================================
-# TELEGRAM HELPERS
-# ============================================================
-
-# ============================================================
-# STATUS MESSAGE STATE
-# ============================================================
-
-_STATUS_MESSAGES = {}
-_STATUS_LOCK = threading.Lock()
-
-def send_message(chat_id, text):
-
-    # --------------------------------------------------------
-    # Обычные пользовательские сообщения.
-    #
-    # Если сообщение содержит техническое исключение,
-    # не показываем его пользователю.
-    # Ошибка остаётся только в консоли.
-    # --------------------------------------------------------
-
-    technical_error_patterns = (
-        "TimeoutError:",
-        "ConnectionError:",
-        "ConnectionResetError:",
-        "ConnectionAbortedError:",
-        "ConnectionRefusedError:",
-        "socket.timeout",
-        "WinError 10060",
-        "WinError 10061",
-        "WinError 10054",
-        "Traceback (most recent call last)",
-    )
-
-    text_string = str(
-        text or ""
-    )
-
-    if any(
-        pattern in text_string
-        for pattern in technical_error_patterns
+    for attempt in range(
+        1,
+        TELEGRAM_API_RETRIES + 1
     ):
-        print(
-            "Telegram: техническая ошибка "
-            "не отправлена пользователю."
-        )
 
-        return {
-            "ok": False,
-            "suppressed": True
-        }
+        sock = None
+        tls_sock = None
 
-    # --------------------------------------------------------
-    # Статусное сообщение.
-    #
-    # Все последовательные сообщения обработки одного чата
-    # редактируют одно и то же сообщение.
-    # --------------------------------------------------------
+        try:
 
-    try:
+            if attempt > 1:
 
-        status_states = globals().setdefault(
-            "_STATUS_MESSAGES",
-            {}
-        )
+                print(
+                    "Telegram API: повтор запроса "
+                    f"{attempt}/{TELEGRAM_API_RETRIES} "
+                    f"через {TELEGRAM_API_RETRY_DELAY} сек."
+                )
 
-        status_lock = globals().get(
-            "_STATUS_LOCK"
-        )
+                time.sleep(
+                    TELEGRAM_API_RETRY_DELAY
+                )
 
-        if status_lock is None:
-            import threading
+            print(
+                "Telegram API: TCP connection "
+                f"attempt {attempt}/{TELEGRAM_API_RETRIES}..."
+            )
 
-            status_lock = threading.Lock()
+            sock = socket.create_connection(
+                (TELEGRAM_IP, TELEGRAM_PORT),
+                timeout=POLL_TIMEOUT + 10
+            )
 
-            globals()[
-                "_STATUS_LOCK"
-            ] = status_lock
+            context = ssl.create_default_context()
 
-        with status_lock:
+            tls_sock = context.wrap_socket(
+                sock,
+                server_hostname=TELEGRAM_HOST
+            )
 
-            status_message_id = (
-                status_states.get(
-                    chat_id
+            request = (
+                f"GET {path} HTTP/1.1\r\n"
+                f"Host: {TELEGRAM_HOST}\r\n"
+                f"User-Agent: CENSURU.NET-Bot/1.0\r\n"
+                f"Connection: close\r\n"
+                f"\r\n"
+            )
+
+            tls_sock.sendall(
+                request.encode("ascii")
+            )
+
+            response = b""
+
+            while True:
+
+                chunk = tls_sock.recv(8192)
+
+                if not chunk:
+                    break
+
+                response += chunk
+
+            if b"\r\n\r\n" not in response:
+
+                raise RuntimeError(
+                    "Telegram вернул "
+                    "некорректный HTTP-ответ."
+                )
+
+            header, body = response.split(
+                b"\r\n\r\n",
+                1
+            )
+
+            result = json.loads(
+                body.decode(
+                    "utf-8",
+                    errors="replace"
                 )
             )
 
-            if status_message_id:
-
-                try:
-
-                    result = edit_message(
-                        chat_id,
-                        status_message_id,
-                        text_string
-                    )
-
-                    if result.get("ok"):
-
-                        return result
-
-                except Exception as edit_error:
-
-                    print(
-                        "Telegram: не удалось "
-                        "отредактировать статус:"
-                    )
-
-                    print(
-                        f"{type(edit_error).__name__}: "
-                        f"{edit_error}"
-                    )
-
-                    status_states.pop(
-                        chat_id,
-                        None
-                    )
-
-            result = telegram_request(
-                "sendMessage",
-                {
-                    "chat_id": chat_id,
-                    "text": text_string
-                }
+            print(
+                "Telegram API: запрос успешен."
             )
-
-            if result.get("ok"):
-
-                message = result.get(
-                    "result",
-                    {}
-                )
-
-                message_id = message.get(
-                    "message_id"
-                )
-
-                if message_id:
-
-                    status_states[
-                        chat_id
-                    ] = message_id
 
             return result
 
-    except Exception:
+        except (
+            TimeoutError,
+            socket.timeout,
+            ConnectionError,
+            ConnectionResetError,
+            ConnectionAbortedError,
+            ConnectionRefusedError,
+            OSError,
+        ) as error:
 
-        raise
+            last_error = error
 
+            print(
+                "Telegram API: TCP/сетевой сбой "
+                f"на попытке {attempt}/{TELEGRAM_API_RETRIES}:"
+            )
 
+            print(
+                f"{type(error).__name__}: {error}"
+            )
 
+            if attempt >= TELEGRAM_API_RETRIES:
 
-def edit_message(chat_id, message_id, text):
+                raise
 
-    return telegram_request(
-        "editMessageText",
-        {
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "text": text
-        }
+        except Exception:
+
+            raise
+
+        finally:
+
+            if tls_sock is not None:
+
+                try:
+                    tls_sock.close()
+                except Exception:
+                    pass
+
+            elif sock is not None:
+
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+
+    if last_error is not None:
+        raise last_error
+
+    raise RuntimeError(
+        "Telegram API: запрос завершился "
+        "без результата."
     )
+
 
 def telegram_upload_file(
     method,
@@ -604,22 +546,98 @@ def telegram_upload_file(
 
     upload_connect_start = time.time()
 
-    sock = socket.create_connection(
-        (
-            TELEGRAM_IP,
-            TELEGRAM_PORT
-        ),
-        timeout=120
-    )
+    # --------------------------------------------------------
+    # TCP CONNECTION WITH RETRIES
+    # --------------------------------------------------------
 
-    upload_connect_elapsed = (
-        time.time() - upload_connect_start
-    )
+    TCP_CONNECT_ATTEMPTS = 3
+    TCP_CONNECT_TIMEOUT = 120
+    TCP_CONNECT_RETRY_DELAY = 3
 
-    print(
-        "Telegram upload: TCP connection OK "
-        f"({upload_connect_elapsed:.2f} сек.)"
-    )
+    sock = None
+    last_connect_error = None
+
+    for connect_attempt in range(
+        1,
+        TCP_CONNECT_ATTEMPTS + 1
+    ):
+
+        try:
+
+            print(
+                "Telegram upload: TCP connection "
+                f"attempt {connect_attempt}/"
+                f"{TCP_CONNECT_ATTEMPTS}..."
+            )
+
+            attempt_start = time.time()
+
+            sock = socket.create_connection(
+                (
+                    TELEGRAM_IP,
+                    TELEGRAM_PORT
+                ),
+                timeout=TCP_CONNECT_TIMEOUT
+            )
+
+            upload_connect_elapsed = (
+                time.time() - upload_connect_start
+            )
+
+            print(
+                "Telegram upload: TCP connection OK "
+                f"({upload_connect_elapsed:.2f} сек.)"
+            )
+
+            break
+
+        except OSError as error:
+
+            last_connect_error = error
+
+            print(
+                "Telegram upload: TCP connection "
+                f"attempt {connect_attempt}/"
+                f"{TCP_CONNECT_ATTEMPTS} failed:"
+            )
+
+            print(
+                f"{type(error).__name__}: {error}"
+            )
+
+            if sock is not None:
+
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+
+                sock = None
+
+            if (
+                connect_attempt
+                < TCP_CONNECT_ATTEMPTS
+            ):
+
+                print(
+                    "Telegram upload: повтор TCP "
+                    f"через {TCP_CONNECT_RETRY_DELAY} сек."
+                )
+
+                time.sleep(
+                    TCP_CONNECT_RETRY_DELAY
+                )
+
+
+    if sock is None:
+
+        if last_connect_error is not None:
+            raise last_connect_error
+
+        raise RuntimeError(
+            "Telegram upload: "
+            "TCP connection не установлено."
+        )
 
     try:
 
@@ -635,7 +653,7 @@ def telegram_upload_file(
             sock,
             server_hostname=TELEGRAM_HOST
         )
-        tls_sock.settimeout(180)
+        tls_sock.settimeout(260)
 
         tls_elapsed = (
             time.time() - tls_start
@@ -646,7 +664,7 @@ def telegram_upload_file(
             f"({tls_elapsed:.2f} сек.)"
         )
         print(
-            "Telegram upload: socket timeout = 180 сек."
+            "Telegram upload: socket timeout = 260 сек."
         )
 
         try:
