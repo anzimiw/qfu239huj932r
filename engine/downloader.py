@@ -2195,6 +2195,248 @@ def get_youtube_music_info(
 
     return None
 
+
+def get_youtube_playlist_tracks(url):
+    """
+    Получает список треков YouTube Music-плейлиста
+    через yt-dlp в режиме --flat-playlist.
+
+    Функция только получает список URL.
+    Скачивание аудио здесь не выполняется.
+
+    Возвращает:
+        {
+            "title": "...",
+            "tracks": [
+                "https://music.youtube.com/watch?v=...",
+                ...
+            ]
+        }
+
+    или None при ошибке.
+    """
+
+    status(
+        "Получение списка треков YouTube Music..."
+    )
+
+    if not url:
+        print(
+            "YouTube Music playlist: "
+            "пустой URL."
+        )
+
+        return None
+
+    command = [
+        YTDLP,
+        "--dump-single-json",
+        "--flat-playlist",
+        "--skip-download",
+        "--quiet",
+        "--no-warnings",
+        url
+    ]
+
+    print()
+    print(
+        "YouTube Music playlist: "
+        "получение списка через yt-dlp..."
+    )
+
+    try:
+
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120
+        )
+
+    except subprocess.TimeoutExpired:
+
+        print(
+            "YouTube Music playlist: "
+            "превышен лимит ожидания 120 секунд."
+        )
+
+        return None
+
+    except FileNotFoundError:
+
+        print(
+            "YouTube Music playlist: "
+            "не найден yt-dlp.exe."
+        )
+
+        return None
+
+    except Exception as e:
+
+        print(
+            "YouTube Music playlist: "
+            "ошибка запуска yt-dlp:"
+        )
+
+        print(
+            f"{type(e).__name__}: {e}"
+        )
+
+        return None
+
+    stderr = (
+        result.stderr.strip()
+        if result.stderr
+        else ""
+    )
+
+    if result.returncode != 0:
+
+        print(
+            "YouTube Music playlist: "
+            "yt-dlp завершился с ошибкой."
+        )
+
+        if stderr:
+            print(
+                stderr
+            )
+
+        return None
+
+    stdout = (
+        result.stdout.strip()
+        if result.stdout
+        else ""
+    )
+
+    if not stdout:
+
+        print(
+            "YouTube Music playlist: "
+            "yt-dlp не вернул JSON."
+        )
+
+        return None
+
+    try:
+
+        data = json.loads(
+            stdout
+        )
+
+    except Exception as e:
+
+        print(
+            "YouTube Music playlist: "
+            "не удалось разобрать JSON."
+        )
+
+        print(
+            f"{type(e).__name__}: {e}"
+        )
+
+        return None
+
+    playlist_title = (
+        data.get("title")
+        or "YouTube Music"
+    )
+
+    entries = (
+        data.get("entries")
+        or []
+    )
+
+    if not entries:
+
+        print(
+            "YouTube Music playlist: "
+            "треки не найдены."
+        )
+
+        return None
+
+    tracks = []
+
+    for entry in entries:
+
+        if not entry:
+            continue
+
+        track_url = (
+            entry.get("webpage_url")
+            or entry.get("url")
+        )
+
+        track_id = (
+            entry.get("id")
+        )
+
+        if not track_url and track_id:
+
+            track_url = (
+                "https://music.youtube.com/watch?v="
+                + str(track_id)
+            )
+
+        if not track_url:
+            continue
+
+        track_url = str(
+            track_url
+        ).strip()
+
+        if not track_url:
+            continue
+
+        if (
+            track_url.startswith(
+                "https://music.youtube.com/"
+            )
+            or
+            track_url.startswith(
+                "https://www.youtube.com/"
+            )
+            or
+            track_url.startswith(
+                "https://youtube.com/"
+            )
+        ):
+
+            tracks.append(
+                track_url
+            )
+
+    if not tracks:
+
+        print(
+            "YouTube Music playlist: "
+            "не удалось сформировать "
+            "ссылки на треки."
+        )
+
+        return None
+
+    print()
+    print(
+        f"Название плейлиста: "
+        f"{playlist_title}"
+    )
+
+    print(
+        f"Найдено треков: "
+        f"{len(tracks)}"
+    )
+
+    return {
+        "title": playlist_title,
+        "tracks": tracks
+    }
+
+
 # GENERAL TRACK INFO
 
 def get_track_info(
