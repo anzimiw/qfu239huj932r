@@ -3891,7 +3891,8 @@ def find_and_download_track(
     output_folder,
     source_url,
     source,
-    youtube_age_restricted=False
+    youtube_age_restricted=False,
+    mode="uncensored"
 ):
     print()
     print("=" * 60)
@@ -3908,304 +3909,269 @@ def find_and_download_track(
         filename
     )
 
-    # ========================================================
-    # 1. SOUNDCLOUD
-    # ========================================================
-
-    status(
-        "Проверка SoundCloud..."
-    )
-
-    result = search_soundcloud(
-        artist,
-        title,
-        duration
-    )
-
-    if result:
-        soundcloud_candidates = [
-            result
-        ]
-
-        alternatives = result.get(
-            "alternatives",
-            []
-        )
-
-        if isinstance(
-            alternatives,
-            list
-        ):
-            soundcloud_candidates.extend(
-                alternatives
-            )
-
-        soundcloud_candidates = (
-            soundcloud_candidates[:5]
-        )
-
-        print(
-            "SoundCloud: кандидатов "
-            "для проверки: "
-            f"{len(soundcloud_candidates)}"
-        )
-
-        for candidate_index, candidate_result in enumerate(
-            soundcloud_candidates,
-            1
-        ):
-            print()
-            print(
-                "SoundCloud: проверка кандидата "
-                f"{candidate_index}/"
-                f"{len(soundcloud_candidates)}"
-            )
-
-            print(
-                "SoundCloud: score: "
-                f"{candidate_result.get('score', 0):.1f}"
-            )
-
-            print(
-                "SoundCloud: название кандидата: "
-                f"{candidate_result.get('title', '')}"
-            )
-
-            print(
-                "SoundCloud: исполнитель кандидата: "
-                f"{candidate_result.get('artist', '')}"
-            )
-
-            candidate_url = (
-                candidate_result.get(
-                    "url"
-                )
-            )
-
-            if not candidate_url:
-                print(
-                    "SoundCloud: у кандидата "
-                    "отсутствует URL. Пропуск."
-                )
-                continue
-
-            if download_from_soundcloud(
-                candidate_url,
-                filepath,
-                duration,
-                candidate_result.get(
-                    "exact_match",
-                    False
-                )
-            ):
-                print(
-                    "SoundCloud: кандидат "
-                    f"{candidate_index} подходит."
-                )
-
-                return filepath
-
-            print(
-                "SoundCloud: кандидат "
-                f"{candidate_index} не подошёл."
-            )
-
-        print(
-            "SoundCloud: все кандидаты "
-            "не подошли."
-        )
-
-    # ========================================================
-    # 2. MP3PARTY
-    # ========================================================
-
-    status(
-        "Проверка MP3Party..."
-    )
-
-    result = search_mp3party(
-        artist,
-        title,
-        duration
-    )
-
-    if result and download_file(
-        result["url"],
-        filepath,
-        result["referer"],
-        MP3PARTY_RETRIES
+    if mode not in (
+        "normal",
+        "uncensored"
     ):
-        return filepath
-
-    # ========================================================
-    # 3. MP3TM
-    # ========================================================
-
-    status(
-        "Проверка MP3TM..."
-    )
-
-    result = search_mp3tm(
-        artist,
-        title,
-        duration
-    )
-
-    if result and download_file(
-        result["url"],
-        filepath,
-        result["referer"],
-        2
-    ):
-        return filepath
-
-    # ========================================================
-    # 4. AUDIOSTART
-    # ========================================================
-
-    status(
-        "Проверка AudioStart..."
-    )
-
-    result = search_audiostart(
-        artist,
-        title,
-        duration
-    )
-
-    if result and download_file(
-        result["url"],
-        filepath,
-        result["referer"],
-        2
-    ):
-        return filepath
-
-    # ========================================================
-    # 5. YOUTUBE / YT-DLP
-    # ========================================================
+        raise ValueError(
+            "Неизвестный mode: "
+            f"{mode!r}. Ожидается "
+            "'normal' или 'uncensored'."
+        )
 
     print()
     print(
-        "YouTube fallback: "
-        "проверка финального этапа..."
+        "Режим скачивания: "
+        f"{mode}"
     )
 
-    print(
-        "YouTube fallback: "
-        f"source = {source!r}"
-    )
+    if mode == "uncensored":
+        # ========================================================
+        # 1. SOUNDCLOUD
+        # ========================================================
 
-    print(
-        "YouTube fallback: "
-        f"source_url = {source_url!r}"
-    )
-
-    print(
-        "YouTube fallback: "
-        f"youtube_age_restricted = "
-        f"{youtube_age_restricted!r}"
-    )
-
-    # --------------------------------------------------------
-    # Сценарий 1:
-    # Исходная ссылка YouTube Music.
-    # Если было подтверждение возраста —
-    # yt-dlp НЕ запускаем.
-    # --------------------------------------------------------
-
-    if (
-        source == "youtube"
-        and youtube_age_restricted
-    ):
-        print()
-        print(
-            "YouTube fallback: "
-            "скачивание пропущено."
+        status(
+            "Проверка SoundCloud..."
         )
 
-        print(
-            "Причина: исходный YouTube "
-            "запросил подтверждение возраста."
+        result = search_soundcloud(
+            artist,
+            title,
+            duration
         )
 
-    # --------------------------------------------------------
-    # Сценарий 2:
-    # Обычная YouTube Music без age restriction.
-    # Используем исходный URL.
-    # --------------------------------------------------------
+        if result:
+            soundcloud_candidates = [
+                result
+            ]
 
-    elif (
-        source == "youtube"
-        and source_url
-    ):
-        print()
-        print(
-            "YouTube fallback: "
-            "возрастное ограничение "
-            "не обнаружено."
-        )
-
-        print(
-            "YouTube fallback: "
-            "запуск yt-dlp..."
-        )
-
-        if download_with_ytdlp(
-            source_url,
-            filepath
-        ):
-            print(
-                "YouTube fallback: "
-                "аудиофайл успешно получен."
+            alternatives = result.get(
+                "alternatives",
+                []
             )
 
+            if isinstance(
+                alternatives,
+                list
+            ):
+                soundcloud_candidates.extend(
+                    alternatives
+                )
+
+            soundcloud_candidates = (
+                soundcloud_candidates[:5]
+            )
+
+            print(
+                "SoundCloud: кандидатов "
+                "для проверки: "
+                f"{len(soundcloud_candidates)}"
+            )
+
+            for candidate_index, candidate_result in enumerate(
+                soundcloud_candidates,
+                1
+            ):
+                print()
+                print(
+                    "SoundCloud: проверка кандидата "
+                    f"{candidate_index}/"
+                    f"{len(soundcloud_candidates)}"
+                )
+
+                print(
+                    "SoundCloud: score: "
+                    f"{candidate_result.get('score', 0):.1f}"
+                )
+
+                print(
+                    "SoundCloud: название кандидата: "
+                    f"{candidate_result.get('title', '')}"
+                )
+
+                print(
+                    "SoundCloud: исполнитель кандидата: "
+                    f"{candidate_result.get('artist', '')}"
+                )
+
+                candidate_url = (
+                    candidate_result.get(
+                        "url"
+                    )
+                )
+
+                if not candidate_url:
+                    print(
+                        "SoundCloud: у кандидата "
+                        "отсутствует URL. Пропуск."
+                    )
+                    continue
+
+                if download_from_soundcloud(
+                    candidate_url,
+                    filepath,
+                    duration,
+                    candidate_result.get(
+                        "exact_match",
+                        False
+                    )
+                ):
+                    print(
+                        "SoundCloud: кандидат "
+                        f"{candidate_index} подходит."
+                    )
+
+                    return filepath
+
+                print(
+                    "SoundCloud: кандидат "
+                    f"{candidate_index} не подошёл."
+                )
+
+            print(
+                "SoundCloud: все кандидаты "
+                "не подошли."
+            )
+
+        # ========================================================
+        # 2. MP3PARTY
+        # ========================================================
+
+        status(
+            "Проверка MP3Party..."
+        )
+
+        result = search_mp3party(
+            artist,
+            title,
+            duration
+        )
+
+        if result and download_file(
+            result["url"],
+            filepath,
+            result["referer"],
+            MP3PARTY_RETRIES
+        ):
             return filepath
 
-        print(
-            "YouTube fallback: "
-            "yt-dlp не смог скачать "
-            "аудиофайл."
+        # ========================================================
+        # 3. MP3TM
+        # ========================================================
+
+        status(
+            "Проверка MP3TM..."
         )
 
-    # --------------------------------------------------------
-    # Сценарий 3:
-    # Исходная ссылка Яндекс Музыки.
-    #
-    # Прямое скачивание с Яндекса НЕ используем.
-    # Ищем соответствующий трек на YouTube
-    # по артисту + названию.
-    # --------------------------------------------------------
+        result = search_mp3tm(
+            artist,
+            title,
+            duration
+        )
 
-    elif source == "yandex":
+        if result and download_file(
+            result["url"],
+            filepath,
+            result["referer"],
+            2
+        ):
+            return filepath
+
+        # ========================================================
+        # 4. AUDIOSTART
+        # ========================================================
+
+        status(
+            "Проверка AudioStart..."
+        )
+
+        result = search_audiostart(
+            artist,
+            title,
+            duration
+        )
+
+        if result and download_file(
+            result["url"],
+            filepath,
+            result["referer"],
+            2
+        ):
+            return filepath
+
+    if mode == "normal":
+        # ========================================================
+        # 5. YOUTUBE / YT-DLP
+        # ========================================================
+
         print()
         print(
             "YouTube fallback: "
-            "исходный источник — Яндекс Музыка."
+            "проверка финального этапа..."
         )
 
         print(
             "YouTube fallback: "
-            "поиск соответствующего трека "
-            "на YouTube по метаданным."
+            f"source = {source!r}"
         )
 
-        fallback_url = (
-            find_youtube_fallback_url(
-                artist,
-                title,
-                duration
+        print(
+            "YouTube fallback: "
+            f"source_url = {source_url!r}"
+        )
+
+        print(
+            "YouTube fallback: "
+            f"youtube_age_restricted = "
+            f"{youtube_age_restricted!r}"
+        )
+
+        # --------------------------------------------------------
+        # Сценарий 1:
+        # Исходная ссылка YouTube Music.
+        # Если было подтверждение возраста —
+        # yt-dlp НЕ запускаем.
+        # --------------------------------------------------------
+
+        if (
+            source == "youtube"
+            and youtube_age_restricted
+        ):
+            print()
+            print(
+                "YouTube fallback: "
+                "скачивание пропущено."
             )
-        )
 
-        if fallback_url:
+            print(
+                "Причина: исходный YouTube "
+                "запросил подтверждение возраста."
+            )
+
+        # --------------------------------------------------------
+        # Сценарий 2:
+        # Обычная YouTube Music без age restriction.
+        # Используем исходный URL.
+        # --------------------------------------------------------
+
+        elif (
+            source == "youtube"
+            and source_url
+        ):
+            print()
+            print(
+                "YouTube fallback: "
+                "возрастное ограничение "
+                "не обнаружено."
+            )
+
             print(
                 "YouTube fallback: "
                 "запуск yt-dlp..."
             )
 
             if download_with_ytdlp(
-                fallback_url,
+                source_url,
                 filepath
             ):
                 print(
@@ -4218,23 +4184,76 @@ def find_and_download_track(
             print(
                 "YouTube fallback: "
                 "yt-dlp не смог скачать "
-                "найденный YouTube-трек."
+                "аудиофайл."
             )
 
-    else:
-        print()
+        # --------------------------------------------------------
+        # Сценарий 3:
+        # Исходная ссылка Яндекс Музыки.
+        #
+        # Прямое скачивание с Яндекса НЕ используем.
+        # Ищем соответствующий трек на YouTube
+        # по артисту + названию.
+        # --------------------------------------------------------
+
+        elif source == "yandex":
+            print()
+            print(
+                "YouTube fallback: "
+                "исходный источник — Яндекс Музыка."
+            )
+
+            print(
+                "YouTube fallback: "
+                "поиск соответствующего трека "
+                "на YouTube по метаданным."
+            )
+
+            fallback_url = (
+                find_youtube_fallback_url(
+                    artist,
+                    title,
+                    duration
+                )
+            )
+
+            if fallback_url:
+                print(
+                    "YouTube fallback: "
+                    "запуск yt-dlp..."
+                )
+
+                if download_with_ytdlp(
+                    fallback_url,
+                    filepath
+                ):
+                    print(
+                        "YouTube fallback: "
+                        "аудиофайл успешно получен."
+                    )
+
+                    return filepath
+
+                print(
+                    "YouTube fallback: "
+                    "yt-dlp не смог скачать "
+                    "найденный YouTube-трек."
+                )
+
+        else:
+            print()
+            print(
+                "YouTube fallback: "
+                "не запущен — отсутствует "
+                "подходящий источник."
+            )
+
         print(
-            "YouTube fallback: "
-            "не запущен — отсутствует "
-            "подходящий источник."
+            "Не удалось скачать "
+            "подходящий аудиофайл."
         )
 
-    print(
-        "Не удалось скачать "
-        "подходящий аудиофайл."
-    )
-
-    return None
+        return None
 
 
 # SINGLE TRACK
@@ -4243,7 +4262,9 @@ def process_single_track(
     url,
     output_folder,
     youtube_retries=1,
-    return_failure=False
+    return_failure=False,
+    mode="uncensored",
+    with_lrc=None
 ):
     info = get_track_info(
         url,
@@ -4339,7 +4360,8 @@ def process_single_track(
         output_folder,
         source_url,
         source,
-        youtube_age_restricted=youtube_age_restricted
+        youtube_age_restricted=youtube_age_restricted,
+        mode=mode
     )
 
     if not filepath:
@@ -4373,7 +4395,18 @@ def process_single_track(
         album
     )
 
-    if DOWNLOAD_LRC:
+    effective_with_lrc = (
+        DOWNLOAD_LRC
+        if with_lrc is None
+        else bool(with_lrc)
+    )
+
+    print(
+        "LRC: "
+        f"{'ВКЛЮЧЕН' if effective_with_lrc else 'ОТКЛЮЧЕН'}"
+    )
+
+    if effective_with_lrc:
         time.sleep(
             LRCLIB_DELAY
         )
