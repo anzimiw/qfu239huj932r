@@ -394,6 +394,18 @@ def telegram_request(method, params=None):
 # ============================================================
 
 _STATUS_MESSAGES = {}
+
+# Ожидающие выбора режима загрузки.
+#
+# Формат:
+# {
+#     chat_id: {
+#         "url": "...",
+#         "kind": "track" | "yandex_playlist" | "youtube_playlist"
+#     }
+# }
+_PENDING_DOWNLOADS = {}
+
 _STATUS_LOCK = threading.Lock()
 
 
@@ -408,6 +420,149 @@ def edit_message(chat_id, message_id, text):
         }
     )
 
+
+
+def send_download_mode_menu(chat_id, url, kind):
+    """
+    Показывает пользователю четыре режима загрузки.
+
+    kind:
+      track
+      yandex_playlist
+      youtube_playlist
+    """
+
+    _PENDING_DOWNLOADS[chat_id] = {
+        "url": url,
+        "kind": kind
+    }
+
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "Обычный + LRC",
+                    "callback_data": "mode:normal:1"
+                },
+                {
+                    "text": "Обычный без LRC",
+                    "callback_data": "mode:normal:0"
+                }
+            ],
+            [
+                {
+                    "text": "Без цензуры + LRC",
+                    "callback_data": "mode:uncensored:1"
+                },
+                {
+                    "text": "Без цензуры без LRC",
+                    "callback_data": "mode:uncensored:0"
+                }
+            ]
+        ]
+    }
+
+    result = telegram_request(
+        "sendMessage",
+        {
+            "chat_id": chat_id,
+            "text": (
+                "Выберите режим скачивания:\n\n"
+                "Обычный режим — YouTube / Yandex → YouTube fallback.\n"
+                "Без цензуры — SoundCloud → MP3Party → MP3TM → AudioStart.\n\n"
+                "LRC можно включить или отключить отдельно."
+            ),
+            "reply_markup": json.dumps(
+                keyboard,
+                ensure_ascii=False,
+                separators=(",", ":")
+            )
+        }
+    )
+
+    if not result.get("ok"):
+        print(
+            "Ошибка отправки меню режима:",
+            result
+        )
+
+    return result
+
+
+def answer_callback_query(callback_query_id):
+    return telegram_request(
+        "answerCallbackQuery",
+        {
+            "callback_query_id": callback_query_id
+        }
+    )
+
+
+def start_download_request(
+    chat_id,
+    url,
+    kind,
+    mode,
+    with_lrc
+):
+    print()
+    print("=" * 70)
+    print("ЗАПУСК ЗАПРОСА ПОСЛЕ ВЫБОРА РЕЖИМА")
+    print("=" * 70)
+    print()
+    print(f"Тип: {kind}")
+    print(f"Режим: {mode}")
+    print(f"LRC: {with_lrc}")
+    print(f"URL: {url}")
+
+    if kind == "track":
+        thread = threading.Thread(
+            target=process_track,
+            args=(
+                chat_id,
+                url
+            ),
+            kwargs={
+                "mode": mode,
+                "with_lrc": with_lrc
+            },
+            daemon=True
+        )
+
+    elif kind == "yandex_playlist":
+        thread = threading.Thread(
+            target=process_yandex_playlist,
+            args=(
+                chat_id,
+                url
+            ),
+            kwargs={
+                "mode": mode,
+                "with_lrc": with_lrc
+            },
+            daemon=True
+        )
+
+    elif kind == "youtube_playlist":
+        thread = threading.Thread(
+            target=process_youtube_playlist,
+            args=(
+                chat_id,
+                url
+            ),
+            kwargs={
+                "mode": mode,
+                "with_lrc": with_lrc
+            },
+            daemon=True
+        )
+
+    else:
+        raise ValueError(
+            f"Неизвестный тип запроса: {kind}"
+        )
+
+    thread.start()
 
 def send_message(chat_id, text):
 
@@ -1049,7 +1204,12 @@ def get_updates(offset=None):
 # ОБРАБОТКА ПЛЕЙЛИСТА ЯНДЕКС МУЗЫКИ
 # ============================================================
 
-def process_yandex_playlist(chat_id, url):
+def process_yandex_playlist(
+    chat_id,
+    url,
+    mode="uncensored",
+    with_lrc=None
+):
 
     try:
 
@@ -1168,7 +1328,9 @@ def process_yandex_playlist(chat_id, url):
                     playlist_progress=(
                         index,
                         total_tracks
-                    )
+                    ),
+                    mode=mode,
+                    with_lrc=with_lrc
                 )
 
                 if success:
@@ -1301,7 +1463,12 @@ def process_yandex_playlist(chat_id, url):
 # ОБРАБОТКА ПЛЕЙЛИСТА YOUTUBE MUSIC
 # ============================================================
 
-def process_youtube_playlist(chat_id, url):
+def process_youtube_playlist(
+    chat_id,
+    url,
+    mode="uncensored",
+    with_lrc=None
+):
 
     try:
 
@@ -1425,7 +1592,9 @@ def process_youtube_playlist(chat_id, url):
                     playlist_progress=(
                         index,
                         total_tracks
-                    )
+                    ),
+                    mode=mode,
+                    with_lrc=with_lrc
                 )
 
                 if success:
@@ -1561,7 +1730,13 @@ def process_youtube_playlist(chat_id, url):
         )
 
 
-def process_track(chat_id, url, playlist_progress=None):
+def process_track(
+    chat_id,
+    url,
+    playlist_progress=None,
+    mode="uncensored",
+    with_lrc=None
+):
 
     try:
 
@@ -1774,7 +1949,8 @@ def process_track(chat_id, url, playlist_progress=None):
             TRACKS_FOLDER,
             url,
             source,
-            youtube_age_restricted
+            youtube_age_restricted,
+            mode=mode
         )
 
         print()
@@ -1852,6 +2028,30 @@ def process_track(chat_id, url, playlist_progress=None):
             info.get("album", "")
         )
 
+        effective_with_lrc = (
+            downloader.DOWNLOAD_LRC
+            if with_lrc is None
+            else bool(with_lrc)
+        )
+
+        print(
+            "LRC: "
+            f"{'ВКЛЮЧЕН' if effective_with_lrc else 'ОТКЛЮЧЕН'}"
+        )
+
+        if effective_with_lrc:
+            time.sleep(
+                downloader.LRCLIB_DELAY
+            )
+
+            downloader.process_lrc(
+                artist,
+                title,
+                info.get("album", ""),
+                duration,
+                file_path
+            )
+
         # ----------------------------------------------------
         # Проверка embedded cover
         # ----------------------------------------------------
@@ -1918,6 +2118,78 @@ def process_track(chat_id, url, playlist_progress=None):
             print(
                 "MP3 успешно отправлен в Telegram."
             )
+
+            # ------------------------------------------------
+            # Отправка LRC-файла
+            # ------------------------------------------------
+            #
+            # LRC имеет то же имя, что и MP3:
+            #
+            #   Artist - Title.mp3
+            #   Artist - Title.lrc
+            #
+            # Никаких промежуточных сообщений пользователю
+            # между MP3 и LRC не отправляем.
+            # ------------------------------------------------
+
+            lrc_path = (
+                os.path.splitext(file_path)[0]
+                + ".lrc"
+            )
+
+            if os.path.isfile(lrc_path):
+
+                print()
+                print(
+                    "LRC-файл найден:"
+                )
+                print(
+                    f"  {lrc_path}"
+                )
+
+                lrc_size = os.path.getsize(
+                    lrc_path
+                )
+
+                print(
+                    f"  Размер: {lrc_size:,} байт"
+                )
+
+                print()
+                print(
+                    "Отправка LRC в Telegram..."
+                )
+
+                lrc_result = send_document(
+                    chat_id,
+                    lrc_path
+                )
+
+                if lrc_result.get("ok"):
+
+                    print(
+                        "LRC успешно отправлен в Telegram."
+                    )
+
+                else:
+
+                    print(
+                        "Ошибка отправки LRC:"
+                    )
+
+                    print(
+                        lrc_result
+                    )
+
+            else:
+
+                print()
+                print(
+                    "LRC-файл не найден."
+                )
+                print(
+                    f"Ожидался: {lrc_path}"
+                )
 
             globals().get(
                 "_STATUS_MESSAGES",
@@ -2103,6 +2375,125 @@ while True:
                 update["update_id"] + 1
             )
 
+            # ------------------------------------------------
+            # CALLBACK: выбор режима скачивания
+            # ------------------------------------------------
+
+            callback_query = update.get(
+                "callback_query"
+            )
+
+            if callback_query:
+                callback_id = callback_query.get(
+                    "id"
+                )
+
+                callback_data = callback_query.get(
+                    "data",
+                    ""
+                )
+
+                callback_message = callback_query.get(
+                    "message",
+                    {}
+                )
+
+                callback_chat = callback_message.get(
+                    "chat",
+                    {}
+                )
+
+                callback_chat_id = callback_chat.get(
+                    "id"
+                )
+
+                print()
+                print(
+                    "[CALLBACK]",
+                    callback_chat_id,
+                    callback_data
+                )
+
+                if callback_id:
+                    try:
+                        answer_callback_query(
+                            callback_id
+                        )
+                    except Exception as callback_error:
+                        print(
+                            "Ошибка answerCallbackQuery:",
+                            callback_error
+                        )
+
+                if (
+                    callback_chat_id
+                    and callback_data.startswith(
+                        "mode:"
+                    )
+                ):
+                    parts = callback_data.split(
+                        ":"
+                    )
+
+                    if len(parts) == 3:
+                        selected_mode = parts[1]
+                        selected_lrc = (
+                            parts[2] == "1"
+                        )
+
+                        if selected_mode not in (
+                            "normal",
+                            "uncensored"
+                        ):
+                            print(
+                                "ОШИБКА: неизвестный mode:",
+                                selected_mode
+                            )
+                            continue
+
+                        pending = _PENDING_DOWNLOADS.pop(
+                            callback_chat_id,
+                            None
+                        )
+
+                        if not pending:
+                            send_message(
+                                callback_chat_id,
+                                "Запрос устарел. Отправьте ссылку заново."
+                            )
+                            continue
+
+                        pending_url = pending["url"]
+                        pending_kind = pending["kind"]
+
+                        send_message(
+                            callback_chat_id,
+                            (
+                                "Режим выбран.\n\n"
+                                f"Режим: "
+                                f"{'обычный' if selected_mode == 'normal' else 'без цензуры'}\n"
+                                f"LRC: "
+                                f"{'включён' if selected_lrc else 'выключен'}\n\n"
+                                "Начинаю обработку..."
+                            )
+                        )
+
+                        start_download_request(
+                            callback_chat_id,
+                            pending_url,
+                            pending_kind,
+                            selected_mode,
+                            selected_lrc
+                        )
+
+                        continue
+
+                continue
+
+            # ------------------------------------------------
+            # MESSAGE
+            # ------------------------------------------------
+
             message = update.get(
                 "message"
             )
@@ -2143,7 +2534,7 @@ while True:
                     (
                         "Цензуры.нет\n\n"
                         "Отправь ссылку на трек "
-                        "YouTube Music или Яндекс Музыка."
+                        "или плейлист YouTube Music / Яндекс Музыка."
                     )
                 )
 
@@ -2193,14 +2584,13 @@ while True:
                         "Яндекс Музыка"
                     )
 
-                    thread = threading.Thread(
-                        target=process_yandex_playlist,
-                        args=(
-                            chat_id,
-                            text
-                        ),
-                        daemon=True
+                    send_download_mode_menu(
+                        chat_id,
+                        text,
+                        "yandex_playlist"
                     )
+
+                    continue
 
                 else:
 
@@ -2209,27 +2599,23 @@ while True:
                         "YouTube Music"
                     )
 
-                    # Текущую обработку YouTube-плейлистов
-                    # пока не меняем.
-                    thread = threading.Thread(
-                        target=process_youtube_playlist,
-                        args=(
-                            chat_id,
-                            text
-                        ),
-                        daemon=True
+                    send_download_mode_menu(
+                        chat_id,
+                        text,
+                        "youtube_playlist"
                     )
+
+                    continue
 
             else:
 
-                thread = threading.Thread(
-                    target=process_track,
-                    args=(
-                        chat_id,
-                        text
-                    ),
-                    daemon=True
+                send_download_mode_menu(
+                    chat_id,
+                    text,
+                    "track"
                 )
+
+                continue
 
             thread.start()
 
