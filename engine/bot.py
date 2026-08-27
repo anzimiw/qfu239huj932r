@@ -384,6 +384,155 @@ def telegram_request(method, params=None):
     )
 
 
+
+# ============================================================
+# TELEGRAM HELPERS
+# ============================================================
+
+# ============================================================
+# STATUS MESSAGE STATE
+# ============================================================
+
+_STATUS_MESSAGES = {}
+_STATUS_LOCK = threading.Lock()
+
+
+def edit_message(chat_id, message_id, text):
+
+    return telegram_request(
+        "editMessageText",
+        {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text
+        }
+    )
+
+
+def send_message(chat_id, text):
+
+    technical_error_patterns = (
+        "TimeoutError:",
+        "ConnectionError:",
+        "ConnectionResetError:",
+        "ConnectionAbortedError:",
+        "ConnectionRefusedError:",
+        "socket.timeout",
+        "WinError 10060",
+        "WinError 10061",
+        "WinError 10054",
+        "Traceback (most recent call last)",
+    )
+
+    text_string = str(
+        text or ""
+    )
+
+    if any(
+        pattern in text_string
+        for pattern in technical_error_patterns
+    ):
+
+        print(
+            "Telegram: техническая ошибка "
+            "не отправлена пользователю."
+        )
+
+        return {
+            "ok": False,
+            "suppressed": True
+        }
+
+    try:
+
+        status_states = globals().setdefault(
+            "_STATUS_MESSAGES",
+            {}
+        )
+
+        status_lock = globals().get(
+            "_STATUS_LOCK"
+        )
+
+        if status_lock is None:
+
+            status_lock = threading.Lock()
+
+            globals()[
+                "_STATUS_LOCK"
+            ] = status_lock
+
+        with status_lock:
+
+            status_message_id = (
+                status_states.get(
+                    chat_id
+                )
+            )
+
+            if status_message_id:
+
+                try:
+
+                    result = edit_message(
+                        chat_id,
+                        status_message_id,
+                        text_string
+                    )
+
+                    if result.get("ok"):
+
+                        return result
+
+                except Exception as edit_error:
+
+                    print(
+                        "Telegram: не удалось "
+                        "отредактировать статус:"
+                    )
+
+                    print(
+                        f"{type(edit_error).__name__}: "
+                        f"{edit_error}"
+                    )
+
+                    status_states.pop(
+                        chat_id,
+                        None
+                    )
+
+            result = telegram_request(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": text_string
+                }
+            )
+
+            if result.get("ok"):
+
+                message = result.get(
+                    "result",
+                    {}
+                )
+
+                message_id = message.get(
+                    "message_id"
+                )
+
+                if message_id:
+
+                    status_states[
+                        chat_id
+                    ] = message_id
+
+            return result
+
+    except Exception:
+
+        raise
+
+
 def telegram_upload_file(
     method,
     chat_id,
