@@ -2078,6 +2078,141 @@ def search_soundcloud(
         "не дали подходящего кандидата."
     )
 
+
+    # ========================================================
+    # TITLE-ONLY LOCAL HELPERS
+    # ========================================================
+    #
+    # TITLE-ONLY fallback является самостоятельным последним
+    # этапом поиска. Он не должен зависеть от helper-функций,
+    # которых может не быть в текущем sources_soundcloud.py.
+    # ========================================================
+
+    def fallback_duration_is_reasonable(
+        candidate_duration,
+        requested_duration
+    ):
+        """
+        Безопасная проверка длительности для TITLE-ONLY.
+
+        Допускаются:
+        - секунды;
+        - миллисекунды;
+        - None.
+
+        Если одна из длительностей неизвестна, кандидат
+        не отбрасывается только из-за отсутствия duration.
+        """
+
+        if (
+            candidate_duration is None
+            or requested_duration is None
+        ):
+            return True
+
+        try:
+            candidate_value = float(
+                candidate_duration
+            )
+
+            requested_value = float(
+                requested_duration
+            )
+
+        except (
+            TypeError,
+            ValueError
+        ):
+            return True
+
+        if candidate_value > 1000:
+            candidate_value /= 1000.0
+
+        if requested_value > 1000:
+            requested_value /= 1000.0
+
+        if (
+            candidate_value <= 0
+            or requested_value <= 0
+        ):
+            return True
+
+        difference = abs(
+            candidate_value
+            - requested_value
+        )
+
+        # Для TITLE-ONLY используем тот же разумный
+        # диапазон, который применяется в основном
+        # SoundCloud scoring: до 6 секунд.
+        return difference <= 6.0
+
+
+    def fallback_get_candidate_artist(
+        candidate
+    ):
+        """
+        Безопасно получает исполнителя SoundCloud-кандидата.
+        """
+
+        if not isinstance(
+            candidate,
+            dict
+        ):
+            return ""
+
+        direct_artist = str(
+            candidate.get("artist")
+            or candidate.get("publisher")
+            or candidate.get("metadata_artist")
+            or ""
+        ).strip()
+
+        if direct_artist:
+            return direct_artist
+
+        user = candidate.get(
+            "user"
+        )
+
+        if isinstance(
+            user,
+            dict
+        ):
+            return str(
+                user.get("username")
+                or user.get("permalink")
+                or ""
+            ).strip()
+
+        return ""
+
+
+    def fallback_get_candidate_url(
+        candidate
+    ):
+        """
+        Безопасно получает URL SoundCloud-кандидата.
+        """
+
+        if not isinstance(
+            candidate,
+            dict
+        ):
+            return ""
+
+        return str(
+            candidate.get("permalink_url")
+            or candidate.get("uri")
+            or candidate.get("url")
+            or ""
+        ).strip()
+
+
+    # ========================================================
+    # END TITLE-ONLY LOCAL HELPERS
+    # ========================================================
+
     title_fallback_queries = []
 
     # Основной вариант: очищенное название без feat.
@@ -2171,15 +2306,124 @@ def search_soundcloud(
             if not candidate_title or not candidate_url:
                 continue
 
+            # ------------------------------------------------
+            # TITLE-ONLY similarity
+            #
+            # Отдельная глобальная title_similarity()
+            # в sources_soundcloud.py отсутствует.
+            #
+            # Поэтому TITLE-ONLY использует локальный
+            # безопасный расчёт similarity.
+            # ------------------------------------------------
+
+            def fallback_norm(value):
+                value = str(
+                    value or ""
+                ).lower()
+
+                value = re.sub(
+                    r"https?://\\S+",
+                    " ",
+                    value,
+                    flags=re.IGNORECASE
+                )
+
+                value = value.replace(
+                    "&",
+                    " and "
+                )
+
+                value = re.sub(
+                    r"[^\\w\\sа-яА-ЯёЁ]",
+                    " ",
+                    value,
+                    flags=re.IGNORECASE
+                )
+
+                value = re.sub(
+                    r"\\s+",
+                    " ",
+                    value
+                ).strip()
+
+                return value
+
+
+            def fallback_title_similarity(
+                left,
+                right
+            ):
+                left_norm = re.sub(
+                    r"\s+",
+                    " ",
+                    fallback_norm(left)
+                ).strip()
+
+                right_norm = re.sub(
+                    r"\s+",
+                    " ",
+                    fallback_norm(right)
+                ).strip()
+
+                if not left_norm or not right_norm:
+                    return 0.0
+
+                if left_norm == right_norm:
+                    return 1.0
+
+                left_tokens = set(
+                    left_norm.split()
+                )
+
+                right_tokens = set(
+                    right_norm.split()
+                )
+
+                if not left_tokens or not right_tokens:
+                    return 0.0
+
+                intersection = (
+                    left_tokens & right_tokens
+                )
+
+                if not intersection:
+                    return 0.0
+
+                precision = (
+                    len(intersection)
+                    / len(left_tokens)
+                )
+
+                recall = (
+                    len(intersection)
+                    / len(right_tokens)
+                )
+
+                if (
+                    precision + recall
+                    == 0
+                ):
+                    return 0.0
+
+                return (
+                    2.0
+                    * precision
+                    * recall
+                    / (
+                        precision
+                        + recall
+                    )
+                )
+
             candidate_title_ratio = (
-                title_similarity(
+                fallback_title_similarity(
                     candidate_title,
                     original_query_title
                 )
             )
 
             candidate_base_title_ratio = (
-                title_similarity(
+                fallback_title_similarity(
                     candidate_title,
                     cleaned_base_title
                 )
@@ -2241,14 +2485,14 @@ def search_soundcloud(
             if title_ratio < 0.82:
                 continue
 
-            if not duration_is_reasonable(
+            if not fallback_duration_is_reasonable(
                 title_candidate.get("duration"),
                 duration
             ):
                 continue
 
             candidate_artist = (
-                get_candidate_artist(
+                fallback_get_candidate_artist(
                     title_candidate
                 )
             )
@@ -2336,13 +2580,13 @@ def search_soundcloud(
         ).strip()
 
         candidate_artist = (
-            get_candidate_artist(
+            fallback_get_candidate_artist(
                 candidate
             )
         )
 
         candidate_url = (
-            get_candidate_url(
+            fallback_get_candidate_url(
                 candidate
             )
         )
@@ -2403,7 +2647,7 @@ def search_soundcloud(
                 )
 
                 alternative_url = (
-                    get_candidate_url(
+                    fallback_get_candidate_url(
                         alternative_candidate
                     )
                 )
@@ -2419,7 +2663,7 @@ def search_soundcloud(
                 ).strip()
 
                 alternative_artist = (
-                    get_candidate_artist(
+                    fallback_get_candidate_artist(
                         alternative_candidate
                     )
                 )
