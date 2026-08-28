@@ -1785,15 +1785,59 @@ def process_track(
         # ----------------------------------------------------
         # 1. Получение информации
         # ----------------------------------------------------
+        #
+        # БЫСТРЫЙ ПУТЬ:
+        #
+        # YouTube + normal:
+        #     metadata НЕ получаем.
+        #     Сразу передаём исходный URL в downloader.py.
+        #
+        # Yandex + normal:
+        #     metadata получаем, потому что они нужны
+        #     для поиска соответствующего YouTube-трека.
+        #
+        # uncensored:
+        #     metadata получаем всегда.
+        # ----------------------------------------------------
 
-        print()
-        print("Получение информации из downloader.py...")
+        fast_youtube_normal = (
+            mode == "normal"
+            and downloader.is_youtube_music_url(url)
+            and not downloader.is_yandex_music_url(url)
+        )
 
-        if downloader.is_yandex_music_url(url):
+        if fast_youtube_normal:
 
             print()
-            print("Источник: Яндекс Музыка")
-            print("Получение информации из Яндекс Музыки...")
+            print(
+                "БЫСТРЫЙ ПУТЬ YOUTUBE."
+            )
+            print(
+                "Метаданные YouTube "
+                "перед скачиванием НЕ получаются."
+            )
+
+            info = {
+                "artist": "",
+                "title": "",
+                "duration": 0,
+                "album": "",
+                "cover_url": None,
+                "source": "youtube",
+                "youtube_age_restricted": False,
+                "fast_youtube": True
+            }
+
+        elif downloader.is_yandex_music_url(url):
+
+            print()
+            print(
+                "Источник: Яндекс Музыка"
+            )
+            print(
+                "Получение информации "
+                "из Яндекс Музыки..."
+            )
 
             info = downloader.get_yandex_music_info(
                 url
@@ -1802,8 +1846,13 @@ def process_track(
         else:
 
             print()
-            print("Источник: YouTube Music")
-            print("Получение информации из YouTube Music...")
+            print(
+                "Источник: YouTube Music"
+            )
+            print(
+                "Получение информации "
+                "из YouTube Music..."
+            )
 
             info = downloader.get_youtube_music_info(
                 url
@@ -1860,7 +1909,14 @@ def process_track(
             False
         )
 
-        if not artist or not title or not duration:
+        if (
+            not info.get("fast_youtube", False)
+            and (
+                not artist
+                or not title
+                or not duration
+            )
+        ):
 
             send_message(
                 chat_id,
@@ -1942,16 +1998,49 @@ def process_track(
         print()
         print("Запуск find_and_download_track()...")
 
-        result = downloader.find_and_download_track(
-            artist,
-            title,
-            duration,
-            TRACKS_FOLDER,
-            url,
-            source,
-            youtube_age_restricted,
-            mode=mode
-        )
+        # ----------------------------------------------------
+        # 3. Выбор пути скачивания
+        # ----------------------------------------------------
+
+        if info.get(
+            "fast_youtube",
+            False
+        ):
+
+            print()
+            print(
+                "Запуск YouTube Fast..."
+            )
+
+            filename = (
+                f"{downloader.safe_filename(url.split('/')[-1])}.mp3"
+            )
+
+            # Имя файла здесь нельзя строить из metadata:
+            # metadata специально НЕ получались.
+            #
+            # downloader.py сам определяет корректное имя
+            # непосредственно из URL только после успешного
+            # скачивания.
+
+            result = downloader.download_youtube_fast_direct(
+                url,
+                TRACKS_FOLDER
+            )
+
+        else:
+
+            result = downloader.find_and_download_track(
+                artist,
+                title,
+                duration,
+                TRACKS_FOLDER,
+                url,
+                source,
+                youtube_age_restricted,
+                mode=mode
+            )
+
 
         print()
         print("Результат downloader.py:")
