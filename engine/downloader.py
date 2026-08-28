@@ -18,6 +18,10 @@ from sources_mp3party import search_mp3party
 from sources_mp3tm import search_mp3tm
 from sources_audiostart import search_audiostart
 
+from sources_youtube_fast import download_youtube_fast
+
+from sources_yandex_fast import find_youtube_fast
+
 ENGINE_FOLDER = os.path.dirname(
     os.path.abspath(__file__)
 )
@@ -3561,6 +3565,116 @@ def download_with_ytdlp(
     )
 
     return True
+
+
+
+# ============================================================
+# FAST DOWNLOAD PATHS
+# ============================================================
+
+def download_youtube_fast_track(
+    youtube_url,
+    filepath
+):
+    """
+    Быстрый путь обычного YouTube-трека.
+
+    Никаких метаданных до скачивания.
+    Никаких SoundCloud / MP3Party / MP3TM / AudioStart.
+    """
+
+    return download_youtube_fast(
+        YTDLP,
+        youtube_url,
+        filepath
+    )
+
+
+def download_yandex_fast_track(
+    artist,
+    title,
+    duration,
+    filepath
+):
+    """
+    Быстрый путь Яндекс Музыка -> YouTube.
+
+    Метаданные Яндекса уже получены вызывающим кодом.
+    Здесь выполняется только поиск YouTube и скачивание.
+    """
+
+    youtube_url = find_youtube_fast(
+        YTDLP,
+        artist,
+        title,
+        duration
+    )
+
+    if not youtube_url:
+
+        return False
+
+    return download_youtube_fast(
+        YTDLP,
+        youtube_url,
+        filepath
+    )
+
+
+
+# ============================================================
+# DIRECT YOUTUBE FAST
+# ============================================================
+
+def download_youtube_fast_direct(
+    youtube_url,
+    output_folder
+):
+    """
+    Полностью быстрый YouTube путь.
+
+    До начала скачивания:
+        - metadata НЕ запрашиваются;
+        - artist/title/duration НЕ запрашиваются;
+        - SoundCloud НЕ используется;
+        - MP3Party НЕ используется;
+        - MP3TM НЕ используется;
+        - AudioStart НЕ используется.
+
+    После успешного скачивания:
+        yt-dlp уже создаёт MP3,
+        после чего вызывающий bot.py продолжает
+        стандартную обработку файла.
+    """
+
+    temp_name = (
+        "youtube_fast_"
+        + str(abs(hash(youtube_url)))
+        + ".mp3"
+    )
+
+    filepath = os.path.join(
+        output_folder,
+        temp_name
+    )
+
+    os.makedirs(
+        output_folder,
+        exist_ok=True
+    )
+
+    success = download_youtube_fast_track(
+        youtube_url,
+        filepath
+    )
+
+    if not success:
+        return None
+
+    if not os.path.isfile(filepath):
+        return None
+
+    return filepath
 
 # FIND AND DOWNLOAD
 
