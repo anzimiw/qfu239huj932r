@@ -2106,6 +2106,234 @@ def process_track(
         # Добавление embedded cover и ID3-тегов
         # ----------------------------------------------------
 
+        # ----------------------------------------------------
+        # YOUTUBE FAST POST-PROCESSING
+        #
+        # В Fast-пути metadata до скачивания НЕ получаются.
+        #
+        # После успешного скачивания получаем metadata,
+        # необходимые для дальнейшей обработки:
+        #
+        #   artist
+        #   title
+        #   duration
+        #   album
+        #   cover_url
+        #
+        # Затем используется существующая обработка:
+        #
+        #   embed_cover()
+        #   process_lrc()
+        #
+        # ----------------------------------------------------
+
+        if info.get(
+            "fast_youtube",
+            False
+        ):
+
+            print()
+            print(
+                "YouTube Fast: "
+                "получение metadata "
+                "ПОСЛЕ скачивания..."
+            )
+
+            post_info = (
+                downloader.get_youtube_music_info(
+                    url
+                )
+            )
+
+            if post_info:
+
+                print(
+                    "YouTube Fast: "
+                    "metadata получены."
+                )
+
+                info.update(
+                    post_info
+                )
+
+                # Не теряем признак Fast-пути.
+                info["fast_youtube"] = True
+
+                artist = info.get(
+                    "artist",
+                    ""
+                )
+
+                title = info.get(
+                    "title",
+                    ""
+                )
+
+                duration = info.get(
+                    "duration",
+                    0
+                )
+
+                source = info.get(
+                    "source",
+                    "youtube"
+                )
+
+                youtube_age_restricted = info.get(
+                    "youtube_age_restricted",
+                    info.get(
+                        "age_restricted",
+                        False
+                    )
+                )
+
+                print(
+                    f"YouTube Fast: "
+                    f"artist = {artist}"
+                )
+
+                print(
+                    f"YouTube Fast: "
+                    f"title = {title}"
+                )
+
+                print(
+                    f"YouTube Fast: "
+                    f"duration = {duration}"
+                )
+
+                print(
+                    "YouTube Fast: cover = "
+                    + (
+                        "найдена"
+                        if info.get("cover_url")
+                        else "не найдена"
+                    )
+                )
+
+                # ------------------------------------------------
+                # Переименование MP3.
+                #
+                # Это выполняется ДО process_lrc(),
+                # чтобы имя LRC совпадало с MP3.
+                # ------------------------------------------------
+
+                if artist and title:
+
+                    safe_artist = (
+                        downloader.safe_filename(
+                            artist
+                        )
+                    )
+
+                    safe_title = (
+                        downloader.safe_filename(
+                            title
+                        )
+                    )
+
+                    normal_name = (
+                        f"{safe_artist} - "
+                        f"{safe_title}.mp3"
+                    )
+
+                    normal_path = os.path.join(
+                        TRACKS_FOLDER,
+                        normal_name
+                    )
+
+                    normal_path = os.path.abspath(
+                        normal_path
+                    )
+
+                    current_path = os.path.abspath(
+                        file_path
+                    )
+
+                    if (
+                        normal_path
+                        != current_path
+                    ):
+
+                        if os.path.exists(
+                            normal_path
+                        ):
+
+                            base_name = (
+                                f"{safe_artist} - "
+                                f"{safe_title}"
+                            )
+
+                            counter = 1
+
+                            while True:
+
+                                candidate = os.path.join(
+                                    TRACKS_FOLDER,
+                                    (
+                                        f"{base_name} "
+                                        f"({counter}).mp3"
+                                    )
+                                )
+
+                                if not os.path.exists(
+                                    candidate
+                                ):
+
+                                    normal_path = (
+                                        candidate
+                                    )
+
+                                    break
+
+                                counter += 1
+
+                        try:
+
+                            os.replace(
+                                file_path,
+                                normal_path
+                            )
+
+                            file_path = normal_path
+
+                            print()
+                            print(
+                                "YouTube Fast: "
+                                "MP3 переименован:"
+                            )
+
+                            print(
+                                f"  {file_path}"
+                            )
+
+                        except Exception as rename_error:
+
+                            print()
+                            print(
+                                "YouTube Fast: "
+                                "не удалось переименовать MP3:"
+                            )
+
+                            print(
+                                f"{type(rename_error).__name__}: "
+                                f"{rename_error}"
+                            )
+
+            else:
+
+                print()
+                print(
+                    "YouTube Fast: "
+                    "metadata после скачивания "
+                    "получить не удалось."
+                )
+
+                print(
+                    "Продолжаю обработку "
+                    "скачанного MP3."
+                )
+
         print()
         print("Добавление обложки в MP3...")
 
