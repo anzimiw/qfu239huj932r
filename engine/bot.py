@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 
+import telegram_queue
+
 import json
 import io
 import os
@@ -209,7 +211,7 @@ def extract_embedded_cover(mp3_path):
 # TELEGRAM API
 # ============================================================
 
-def telegram_request(method, params=None):
+def _telegram_request_now(method, params=None):
 
     # ========================================================
     # TELEGRAM API NETWORK CONTROL V2
@@ -622,6 +624,29 @@ _PENDING_DOWNLOADS = {}
 _STATUS_LOCK = threading.Lock()
 
 
+
+def telegram_request(method, params=None):
+    """
+    Очередь исходящих Telegram API-запросов.
+
+    getUpdates сюда не попадает:
+    он вызывается напрямую из get_updates().
+    """
+
+    if method == "getUpdates":
+        return _telegram_request_now(
+            method,
+            params
+        )
+
+    return telegram_queue.enqueue(
+        "API:" + str(method),
+        _telegram_request_now,
+        method,
+        params
+    )
+
+
 def edit_message(chat_id, message_id, text):
 
     return telegram_request(
@@ -901,7 +926,7 @@ def send_message(chat_id, text):
         raise
 
 
-def telegram_upload_file(
+def _telegram_upload_file_now(
     method,
     chat_id,
     file_path,
@@ -1365,6 +1390,32 @@ def telegram_upload_file(
     return result
 
 
+
+def telegram_upload_file(
+    method,
+    chat_id,
+    file_path,
+    field_name="audio",
+    caption=None
+):
+    """
+    Очередь загрузки файлов.
+
+    Реальный TCP/TLS/upload выполняется
+    отдельным Telegram queue worker.
+    """
+
+    return telegram_queue.enqueue(
+        "UPLOAD:" + str(method),
+        _telegram_upload_file_now,
+        method,
+        chat_id,
+        file_path,
+        field_name,
+        caption
+    )
+
+
 def send_audio(
     chat_id,
     file_path,
@@ -1402,7 +1453,7 @@ def get_updates(offset=None):
     if offset is not None:
         params["offset"] = offset
 
-    return telegram_request(
+    return _telegram_request_now(
         "getUpdates",
         params
     )
@@ -2875,6 +2926,10 @@ print()
 
 offset = None
 
+
+
+# Telegram outgoing queue worker
+telegram_queue.start()
 
 while True:
 
