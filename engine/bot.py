@@ -212,21 +212,19 @@ def extract_embedded_cover(mp3_path):
 def telegram_request(method, params=None):
 
     # ========================================================
-    # TELEGRAM_API_RETRY_V1
+    # TELEGRAM API NETWORK CONTROL
     #
-    # Один Telegram API-запрос выполняется максимум RETRIES раз.
+    # Обычные API-запросы:
+    #   - короткий TCP timeout;
+    #   - максимум 2 попытки;
+    #   - короткая пауза между попытками.
     #
-    # Retry охватывает весь цикл:
-    # TCP -> TLS -> HTTP -> получение ответа.
+    # Это предотвращает ситуацию, когда временный WinError 10060
+    # блокирует обработку трека на десятки секунд.
     #
-    # Это защищает sendMessage / editMessageText / getUpdates
-    # от кратковременных сетевых WinError 10060.
-    #
-    # POLL_TIMEOUT не изменяется.
+    # getUpdates НЕ использует короткий timeout:
+    # polling должен продолжать работать с POLL_TIMEOUT.
     # ========================================================
-
-    TELEGRAM_API_RETRIES = 3
-    TELEGRAM_API_RETRY_DELAY = 3
 
     if params is None:
         params = {}
@@ -241,11 +239,21 @@ def telegram_request(method, params=None):
 
         path += "?" + query
 
+    if method == "getUpdates":
+        telegram_api_retries = 3
+        telegram_api_retry_delay = 3
+        telegram_api_timeout = POLL_TIMEOUT + 10
+
+    else:
+        telegram_api_retries = 2
+        telegram_api_retry_delay = 0.5
+        telegram_api_timeout = 5
+
     last_error = None
 
     for attempt in range(
         1,
-        TELEGRAM_API_RETRIES + 1
+        telegram_api_retries + 1
     ):
 
         sock = None
@@ -257,22 +265,25 @@ def telegram_request(method, params=None):
 
                 print(
                     "Telegram API: повтор запроса "
-                    f"{attempt}/{TELEGRAM_API_RETRIES} "
-                    f"через {TELEGRAM_API_RETRY_DELAY} сек."
+                    f"{attempt}/{telegram_api_retries} "
+                    f"через {telegram_api_retry_delay} сек."
                 )
 
                 time.sleep(
-                    TELEGRAM_API_RETRY_DELAY
+                    telegram_api_retry_delay
                 )
 
             print(
                 "Telegram API: TCP connection "
-                f"attempt {attempt}/{TELEGRAM_API_RETRIES}..."
+                f"attempt {attempt}/{telegram_api_retries}..."
             )
 
             sock = socket.create_connection(
-                (TELEGRAM_IP, TELEGRAM_PORT),
-                timeout=POLL_TIMEOUT + 10
+                (
+                    TELEGRAM_IP,
+                    TELEGRAM_PORT
+                ),
+                timeout=telegram_api_timeout
             )
 
             context = ssl.create_default_context()
@@ -298,7 +309,9 @@ def telegram_request(method, params=None):
 
             while True:
 
-                chunk = tls_sock.recv(8192)
+                chunk = tls_sock.recv(
+                    8192
+                )
 
                 if not chunk:
                     break
@@ -344,14 +357,15 @@ def telegram_request(method, params=None):
 
             print(
                 "Telegram API: TCP/сетевой сбой "
-                f"на попытке {attempt}/{TELEGRAM_API_RETRIES}:"
+                f"на попытке {attempt}/"
+                f"{telegram_api_retries}:"
             )
 
             print(
                 f"{type(error).__name__}: {error}"
             )
 
-            if attempt >= TELEGRAM_API_RETRIES:
+            if attempt >= telegram_api_retries:
 
                 raise
 
@@ -382,7 +396,6 @@ def telegram_request(method, params=None):
         "Telegram API: запрос завершился "
         "без результата."
     )
-
 
 
 # ============================================================
