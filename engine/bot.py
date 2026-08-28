@@ -212,18 +212,22 @@ def extract_embedded_cover(mp3_path):
 def telegram_request(method, params=None):
 
     # ========================================================
-    # TELEGRAM API NETWORK CONTROL
+    # TELEGRAM API NETWORK CONTROL V2
     #
     # Обычные API-запросы:
-    #   - короткий TCP timeout;
-    #   - максимум 2 попытки;
-    #   - короткая пауза между попытками.
+    #   TCP/TLS/HTTP timeout = 5 секунд
+    #   максимум 2 попытки
+    #   пауза между попытками = 0.5 сек.
     #
-    # Это предотвращает ситуацию, когда временный WinError 10060
-    # блокирует обработку трека на десятки секунд.
+    # getUpdates:
+    #   используется длинный POLL_TIMEOUT.
     #
-    # getUpdates НЕ использует короткий timeout:
-    # polling должен продолжать работать с POLL_TIMEOUT.
+    # Важно:
+    #   timeout устанавливается не только на TCP connect,
+    #   но и на уже созданные TCP/TLS sockets.
+    #
+    # Поэтому зависший TLS/HTTP recv() также не может
+    # блокировать бота бесконечно.
     # ========================================================
 
     if params is None:
@@ -278,20 +282,100 @@ def telegram_request(method, params=None):
                 f"attempt {attempt}/{telegram_api_retries}..."
             )
 
-            sock = socket.create_connection(
-                (
-                    TELEGRAM_IP,
-                    TELEGRAM_PORT
-                ),
-                timeout=telegram_api_timeout
+            # ------------------------------------------------
+            # TCP CONNECT
+            # ------------------------------------------------
+
+            try:
+
+                sock = socket.create_connection(
+                    (
+                        TELEGRAM_IP,
+                        TELEGRAM_PORT
+                    ),
+                    timeout=telegram_api_timeout
+                )
+
+                # Важно:
+                # timeout сохраняется и после установления TCP.
+                sock.settimeout(
+                    telegram_api_timeout
+                )
+
+                print(
+                    "Telegram API: TCP connection OK."
+                )
+
+            except (
+                TimeoutError,
+                socket.timeout,
+                ConnectionError,
+                ConnectionResetError,
+                ConnectionAbortedError,
+                ConnectionRefusedError,
+                OSError,
+            ) as error:
+
+                print(
+                    "Telegram API: TCP connection failed:"
+                )
+
+                print(
+                    f"{type(error).__name__}: {error}"
+                )
+
+                raise
+
+            # ------------------------------------------------
+            # TLS HANDSHAKE
+            # ------------------------------------------------
+
+            print(
+                "Telegram API: TLS handshake..."
             )
 
             context = ssl.create_default_context()
 
-            tls_sock = context.wrap_socket(
-                sock,
-                server_hostname=TELEGRAM_HOST
-            )
+            try:
+
+                tls_sock = context.wrap_socket(
+                    sock,
+                    server_hostname=TELEGRAM_HOST
+                )
+
+                # Важно:
+                # после TLS handshake timeout также сохраняется.
+                tls_sock.settimeout(
+                    telegram_api_timeout
+                )
+
+                print(
+                    "Telegram API: TLS OK."
+                )
+
+            except (
+                TimeoutError,
+                socket.timeout,
+                ConnectionError,
+                ConnectionResetError,
+                ConnectionAbortedError,
+                ConnectionRefusedError,
+                OSError,
+            ) as error:
+
+                print(
+                    "Telegram API: TLS connection failed:"
+                )
+
+                print(
+                    f"{type(error).__name__}: {error}"
+                )
+
+                raise
+
+            # ------------------------------------------------
+            # HTTP REQUEST
+            # ------------------------------------------------
 
             request = (
                 f"GET {path} HTTP/1.1\r\n"
@@ -301,22 +385,78 @@ def telegram_request(method, params=None):
                 f"\r\n"
             )
 
-            tls_sock.sendall(
-                request.encode("ascii")
+            print(
+                "Telegram API: sending HTTP request..."
+            )
+
+            try:
+
+                tls_sock.sendall(
+                    request.encode("ascii")
+                )
+
+            except (
+                TimeoutError,
+                socket.timeout,
+                ConnectionError,
+                ConnectionResetError,
+                ConnectionAbortedError,
+                ConnectionRefusedError,
+                OSError,
+            ) as error:
+
+                print(
+                    "Telegram API: HTTP send failed:"
+                )
+
+                print(
+                    f"{type(error).__name__}: {error}"
+                )
+
+                raise
+
+            # ------------------------------------------------
+            # HTTP RESPONSE
+            # ------------------------------------------------
+
+            print(
+                "Telegram API: waiting for response..."
             )
 
             response = b""
 
-            while True:
+            try:
 
-                chunk = tls_sock.recv(
-                    8192
+                while True:
+
+                    chunk = tls_sock.recv(
+                        8192
+                    )
+
+                    if not chunk:
+                        break
+
+                    response += chunk
+
+            except (
+                TimeoutError,
+                socket.timeout,
+                ConnectionError,
+                ConnectionResetError,
+                ConnectionAbortedError,
+                ConnectionRefusedError,
+                OSError,
+            ) as error:
+
+                print(
+                    "Telegram API: HTTP receive failed:"
                 )
 
-                if not chunk:
-                    break
+                print(
+                    f"{type(error).__name__}: {error}"
+                )
 
-                response += chunk
+                raise
 
             if b"\r\n\r\n" not in response:
 
@@ -355,15 +495,70 @@ def telegram_request(method, params=None):
 
             last_error = error
 
+            error_text = str(error)
+
+            # ------------------------------------------------
+            # Windows error diagnostics
+            # ------------------------------------------------
+
+            win_error = getattr(
+                error,
+                "winerror",
+                None
+            )
+
+            if win_error is not None:
+
+                error_label = (
+                    f"WinError {win_error}"
+                )
+
+            else:
+
+                error_label = (
+                    f"{type(error).__name__}"
+                )
+
+            print()
+
             print(
-                "Telegram API: TCP/сетевой сбой "
+                "Telegram API: сетевой сбой "
                 f"на попытке {attempt}/"
                 f"{telegram_api_retries}:"
             )
 
             print(
-                f"{type(error).__name__}: {error}"
+                f"{error_label}: {error_text}"
             )
+
+            # ------------------------------------------------
+            # WINERROR 10051
+            #
+            # Windows сообщает, что сеть/маршрут
+            # временно недоступны.
+            #
+            # Бессмысленно делать длинные retries:
+            # следующая попытка всё равно может сразу
+            # получить тот же локальный сетевой сбой.
+            #
+            # Для последней попытки ошибка всё равно
+            # будет выброшена ниже.
+            # ------------------------------------------------
+
+            if (
+                win_error == 10051
+                and attempt < telegram_api_retries
+            ):
+
+                print(
+                    "Telegram API: Windows сообщает "
+                    "об отсутствии сетевого маршрута."
+                )
+
+                print(
+                    "Telegram API: следующая попытка "
+                    "будет выполнена без увеличения timeout."
+                )
 
             if attempt >= telegram_api_retries:
 
@@ -378,26 +573,31 @@ def telegram_request(method, params=None):
             if tls_sock is not None:
 
                 try:
+
                     tls_sock.close()
+
                 except Exception:
+
                     pass
 
             elif sock is not None:
 
                 try:
+
                     sock.close()
+
                 except Exception:
+
                     pass
 
     if last_error is not None:
+
         raise last_error
 
     raise RuntimeError(
         "Telegram API: запрос завершился "
         "без результата."
     )
-
-
 # ============================================================
 # TELEGRAM HELPERS
 # ============================================================
