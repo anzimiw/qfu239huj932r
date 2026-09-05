@@ -2876,7 +2876,7 @@ print("Проверка Bot API...")
 
 try:
 
-    result = telegram_request(
+    result = _telegram_request_now(
         "getMe"
     )
 
