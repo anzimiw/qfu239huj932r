@@ -1,0 +1,154 @@
+# -*- coding: utf-8 -*-
+
+"""
+CENSURU.NET
+Telegram outgoing queue.
+
+Downloader не должен ждать восстановления Telegram.
+Все исходящие операции, кроме getUpdates, выполняются
+отдельным worker-потоком.
+"""
+
+import queue
+import threading
+import time
+
+
+_OUTBOX = queue.Queue()
+_WORKER = None
+_WORKER_LOCK = threading.Lock()
+
+
+def start():
+    global _WORKER
+
+    with _WORKER_LOCK:
+        if _WORKER is not None and _WORKER.is_alive():
+            return
+
+        _WORKER = threading.Thread(
+            target=_worker,
+            name="telegram-outbox-worker",
+            daemon=True,
+        )
+
+        _WORKER.start()
+
+        print(
+            "Telegram queue: worker запущен."
+        )
+
+
+def enqueue(kind, func, *args, **kwargs):
+    start()
+
+    item = {
+        "kind": kind,
+        "func": func,
+        "args": args,
+        "kwargs": kwargs,
+    }
+
+    _OUTBOX.put(item)
+
+    print(
+        "Telegram queue: задача добавлена: "
+        f"{kind} "
+        f"(очередь={_OUTBOX.qsize()})"
+    )
+
+    return {
+        "ok": True,
+        "queued": True,
+        "queue_size": _OUTBOX.qsize(),
+    }
+
+
+def size():
+    return _OUTBOX.qsize()
+
+
+def _worker():
+    while True:
+
+        item = _OUTBOX.get()
+
+        kind = item["kind"]
+        func = item["func"]
+        args = item["args"]
+        kwargs = item["kwargs"]
+
+        try:
+
+            print()
+            print(
+                "Telegram queue: выполнение:"
+                f" {kind}"
+            )
+
+            while True:
+
+                try:
+
+                    result = func(
+                        *args,
+                        **kwargs
+                    )
+
+                    if isinstance(result, dict):
+                        if not result.get("ok", False):
+                            raise RuntimeError(
+                                "Telegram API error: "
+                                f"{result}"
+                            )
+
+                    print(
+                        "Telegram queue: выполнено:"
+                        f" {kind}"
+                    )
+
+                    break
+
+                except Exception as error:
+
+                    print()
+                    print(
+                        "Telegram queue: ошибка отправки:"
+                    )
+
+                    print(
+                        f"{type(error).__name__}: {error}"
+                    )
+
+                    print(
+                        "Telegram queue: "
+                        "задача сохранена в очереди."
+                    )
+
+                    print(
+                        "Telegram queue: "
+                        "повтор через 3 сек."
+                    )
+
+                    time.sleep(3)
+
+        except Exception as error:
+
+            print()
+            print(
+                "Telegram queue: "
+                "критическая ошибка worker:"
+            )
+
+            print(
+                f"{type(error).__name__}: {error}"
+            )
+
+        finally:
+
+            _OUTBOX.task_done()
+
+
+def wait_until_empty():
+    start()
+    _OUTBOX.join()
